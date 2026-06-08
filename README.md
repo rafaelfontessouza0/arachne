@@ -3,15 +3,24 @@
 **Async web + API crawler / spider for authenticated and unauthenticated recon.**
 
 `arachne` maps the full reachable surface of a web target — pages **and** APIs —
-in a single tool. It combines a fast `asyncio` + `httpx` static crawler with an
-optional headless-Chromium render pass (Playwright) that executes JavaScript and
-captures every `XHR`/`fetch`, so the API surface of modern SPAs (betting,
-banking, dashboards) actually shows up instead of hiding behind client-side
-routing.
+in one tool. A fast `asyncio` + `httpx` engine does the breadth; an optional
+headless-Chromium pass (Playwright) executes JavaScript and captures every
+`XHR`/`fetch`, so the API surface of modern SPAs (betting, banking, dashboards)
+shows up instead of hiding behind client-side routing.
 
-It works the same whether you give it credentials or not — an *unauthenticated*
-run is just an *authenticated* run with no auth material supplied — so you can
-diff the two surfaces.
+It's built for **authenticated** targets. It carries a session as cookies *and*
+a `localStorage` token, **keeps that session alive** — detecting expiry and
+**re-authenticating mid-crawl** — can **seed from a captured session**
+(HAR / Burp / Postman), parses **OpenAPI/Swagger** and **GraphQL** schemas for
+free, scans bodies for **secrets**, and can **impersonate a browser's TLS
+fingerprint** to get past WAFs. It works the same with or without credentials —
+an *unauthenticated* run is just an *authenticated* run with no auth supplied —
+so you can diff the two surfaces.
+
+**Pipeline:** seed (URLs · sitemap · HAR/Burp/Postman · urlfinder) → optional
+browser-first render → async crawl + JS/JSON endpoint mining → OpenAPI + GraphQL
+discovery → secret scan → structured output (`endpoints.jsonl`, `api.txt`,
+`secrets.jsonl`, …).
 
 ---
 
