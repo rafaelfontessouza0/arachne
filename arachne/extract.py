@@ -60,6 +60,45 @@ def looks_like_api(url: str, content_type: Optional[str] = None) -> bool:
     return bool(_API_HINT_RE.search(url))
 
 
+# Mined-candidate classification — keeps the JS miner from turning MIME types,
+# module specifiers and version strings into bogus in-scope fetches.
+_MIME_RE = re.compile(
+    r"^(?:application|text|image|audio|video|multipart|font|model|message|"
+    r"chemical|x-[\w.+-]+)/[\w.+-]+$", re.I)
+_MODULE_RE = re.compile(r"^@?[\w.-]+/[\w.-]+$")  # react-dom/client, @scope/pkg, 1.2.3/build
+_FETCHABLE_EXT_RE = re.compile(
+    r"\.(?:js|mjs|json|php|asp|aspx|jsp|action|do|xml|htm|html|txt)(?:[?#]|$)", re.I)
+
+
+def classify_endpoint(raw: str) -> str:
+    """Rate a JS/JSON-mined candidate: 'strong' (fetch), 'weak' (record), 'reject'.
+
+    The miner's regex matches anything shaped like ``word/word`` — which catches
+    real endpoints but also MIME types (``application/json``), bare module
+    specifiers (``react-dom/client``) and versions (``1.2.3/build``). Only
+    absolute URLs and rooted paths are high-confidence.
+    """
+    raw = (raw or "").strip()
+    if not raw or len(raw) > 400 or " " in raw:
+        return "reject"
+    if raw.startswith(("http://", "https://", "//")):
+        return "strong"
+    if raw.startswith("/"):
+        return "reject" if raw == "/" else "strong"
+    if raw.startswith(("./", "../")):
+        return "weak"
+    # bare token: most likely MIME / module / version noise
+    if _MIME_RE.match(raw):
+        return "reject"
+    if _FETCHABLE_EXT_RE.search(raw):
+        return "weak"          # e.g. vendor/chunk-abc.js — could be a real bundle
+    if _MODULE_RE.match(raw):
+        return "reject"        # react-dom/client, @angular/core, 1.2.3/build
+    if _API_HINT_RE.search("/" + raw):
+        return "weak"
+    return "reject"
+
+
 def param_names(url: str) -> List[str]:
     q = urlsplit(url).query
     if not q:

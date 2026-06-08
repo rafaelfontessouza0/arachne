@@ -21,6 +21,16 @@ diff the two surfaces.
   limiting, retries/backoff.
 - **JS-aware** — mines endpoints from JavaScript bundles and inline scripts
   (LinkFinder-style regex) and walks JSON responses for more URLs.
+- **Confidence-filtered** — mined candidates are graded *strong* / *weak* /
+  *reject*, so MIME types, module specifiers and version strings don't become
+  bogus requests; weak ones land in `candidates.txt` for review.
+- **OpenAPI / Swagger discovery** — probes well-known spec paths and, when found,
+  parses the spec into every declared path + method + parameter.
+- **GraphQL introspection** — probes common GraphQL endpoints with a read-only
+  introspection query; dumps the schema to `graphql.json` when it's enabled.
+- **Secret detection** — scans HTML/JS/JSON bodies for AWS/GCP keys, JWTs,
+  GitHub/Slack/Stripe tokens, private keys, basic-auth URLs → `secrets.jsonl`
+  (redacted by default).
 - **Render mode** — headless Chromium (Playwright) renders SPA routes,
   auto-scrolls, and records all network requests → real API discovery.
 - **API-aware** — flags `/api/`, `/v1/`, `graphql`, `.json`, etc. and writes a
@@ -167,10 +177,13 @@ All files land in the `-o` directory (default `arachne-out/`):
 |------|----------|
 | `endpoints.jsonl` | one JSON record per discovered/fetched resource (url, method, status, content-type, length, source, depth, params, api flag, …) |
 | `urls.txt` | unique URLs |
-| `api.txt` | API-looking endpoints |
+| `api.txt` | API-looking endpoints (incl. every path parsed from OpenAPI/Swagger) |
 | `js.txt` | JavaScript bundle URLs |
 | `params.txt` | discovered parameter names |
-| `summary.json` | counts by status / source |
+| `candidates.txt` | low-confidence mined endpoints (not auto-fetched; review manually or rerun with `--fetch-candidates`) |
+| `secrets.jsonl` | detected secrets — `{type, confidence, match, url}`, redacted unless `--show-secrets` |
+| `graphql.json` | introspected GraphQL schemas (queries, mutations, types) per endpoint |
+| `summary.json` | counts by status / source / secret type |
 
 ---
 
@@ -183,6 +196,7 @@ budget       -d DEPTH  -m MAX_PAGES  -c CONCURRENCY  --rate RPS  --delay S
 safety       --allow-active  --respect-robots  --no-sitemap
 transport    --proxy URL  --burp  -k/--insecure  -A UA  --no-redirects
 auth         -H  -b  --cookies-file  --bearer  --auth-json  --storage-state
+discovery    --no-api-docs  --no-graphql  --no-secrets  --show-secrets  --fetch-candidates
 render       --render  --render-pages N  --render-wait MS  --no-scroll  --headful
 output       -o DIR  -q  -v
 ```

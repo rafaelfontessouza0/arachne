@@ -107,6 +107,19 @@ output files (in -o dir):
     g.add_argument("--storage-state", metavar="FILE",
                    help="Playwright storage_state json (used by --render and for cookies)")
 
+    # discovery
+    g = p.add_argument_group("discovery / extraction")
+    g.add_argument("--no-api-docs", action="store_true",
+                   help="skip OpenAPI/Swagger spec probing + parsing")
+    g.add_argument("--no-graphql", action="store_true",
+                   help="skip GraphQL introspection probing")
+    g.add_argument("--no-secrets", action="store_true",
+                   help="skip secret scanning of response bodies")
+    g.add_argument("--show-secrets", action="store_true",
+                   help="write secrets unredacted (default: redacted)")
+    g.add_argument("--fetch-candidates", action="store_true",
+                   help="also fetch low-confidence mined endpoints (candidates.txt)")
+
     # render
     g = p.add_argument_group("browser render (SPA / XHR capture)")
     g.add_argument("--render", action="store_true",
@@ -175,6 +188,11 @@ def config_from_args(ns: argparse.Namespace) -> Config:
         cookies_file=ns.cookies_file,
         bearer=ns.bearer,
         storage_state=ns.storage_state,
+        fetch_candidates=ns.fetch_candidates,
+        scan_secrets=not ns.no_secrets,
+        redact_secrets=not ns.show_secrets,
+        api_docs=not ns.no_api_docs,
+        graphql=not ns.no_graphql,
         render=ns.render,
         render_pages=ns.render_pages,
         render_wait=ns.render_wait,

@@ -89,5 +89,16 @@ class HttpClient:
                 return None
         return None
 
+    async def post_json(self, url: str, payload) -> Optional[httpx.Response]:
+        """Single read-only JSON POST (used for GraphQL introspection)."""
+        await self.limiter.acquire()
+        if self.cfg.delay:
+            await asyncio.sleep(self.cfg.delay)
+        try:
+            async with self._sem:
+                return await self._client.post(url, json=payload)
+        except (httpx.TransportError, httpx.HTTPError):
+            return None
+
     async def aclose(self) -> None:
         await self._client.aclose()

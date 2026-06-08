@@ -75,6 +75,13 @@ class Config:
     render_scroll: bool = True
     headful: bool = False
 
+    # Discovery / extraction
+    fetch_candidates: bool = False   # also fetch weak (low-confidence) mined endpoints
+    scan_secrets: bool = True        # scan bodies for secrets -> secrets.jsonl
+    redact_secrets: bool = True
+    api_docs: bool = True            # probe + parse OpenAPI/Swagger specs
+    graphql: bool = True             # probe GraphQL endpoints with introspection
+
     # Output
     output_dir: str = "arachne-out"
     quiet: bool = False
