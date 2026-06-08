@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arachne-spider"
+version = "0.1.0"
+description = "Async web + API crawler/spider for authenticated and unauthenticated recon"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "rafaelfontessouza0" }]
+keywords = ["crawler", "spider", "pentest", "recon", "api", "bug-bounty", "security"]
+dependencies = [
+    "httpx[http2]>=0.24",
+    "tldextract>=3.4",
+    "selectolax>=0.3",
+    "beautifulsoup4>=4.11",
+    "lxml>=4.9",
+]
+
+[project.optional-dependencies]
+render = ["playwright>=1.30"]
+
+[project.scripts]
+arachne = "arachne.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["arachne*"]

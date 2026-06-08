@@ -1,0 +1,12 @@
+# core (required)
+httpx[http2]>=0.24
+tldextract>=3.4
+
+# HTML parsing — selectolax is fast; beautifulsoup4+lxml is the fallback
+selectolax>=0.3
+beautifulsoup4>=4.11
+lxml>=4.9
+
+# optional — only needed for --render (SPA / XHR capture)
+# install separately:  pip install playwright && playwright install chromium
+# playwright>=1.30

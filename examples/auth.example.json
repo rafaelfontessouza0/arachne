@@ -1,0 +1,13 @@
+{
+  "_comment": "Pass with --auth-json. Any subset of these keys works.",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOi...",
+    "X-Api-Key": "optional-extra-header"
+  },
+  "cookies": {
+    "session": "abc123",
+    "accessToken": "patron:id:accesstoken:..."
+  },
+  "bearer": "eyJhbGciOi...",
+  "storage_state": "state.json"
+}

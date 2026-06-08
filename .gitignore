@@ -1,0 +1,25 @@
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.Python
+
+# arachne output / runtime
+arachne-out/
+out/
+*.jsonl
+storage/
+state.json
+*.har
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
