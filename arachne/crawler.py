@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from typing import List, Set, Optional, Tuple
 from urllib.parse import urlsplit
@@ -16,6 +17,10 @@ from .models import Task, Result
 from . import extract, secrets, apidocs
 
 MAX_TEXT_BYTES = 10 * 1024 * 1024  # cap body size we parse
+
+# signals that an authenticated request fell back to a login flow
+_LOGIN_RE = re.compile(
+    r"(login|sign[-_]?in|signin|/auth(/|$)|/sso|account/login|session/new|/oauth)", re.I)
 
 
 class Crawler:
@@ -33,6 +38,9 @@ class Crawler:
         self._secret_seen: Set[Tuple[str, str]] = set()
         self._sitemap_seen: Set[str] = set()
         self._fetched = 0
+        self._authed = False
+        self._auth_failures = 0
+        self._auth_warned = False
 
     # -- logging -----------------------------------------------------------
     def _log(self, msg: str) -> None:
@@ -121,6 +129,8 @@ class Crawler:
             redirected_to=(final_url if str(task.url) != final_url else None),
         )
 
+        self._check_auth_health(task, result, final_url)
+
         if len(body) > MAX_TEXT_BYTES:
             self.out.write(result)
             return
@@ -160,6 +170,22 @@ class Crawler:
             self._scan_secrets(text, final_url)
 
         self.out.write(result)
+
+    def _check_auth_health(self, task: Task, result: Result, final_url: str) -> None:
+        """Surface a session-expiry warning when authenticated requests start
+        failing with 401/403 or redirecting to a login page."""
+        if not self._authed or result.status is None:
+            return
+        login_redirect = bool(result.redirected_to and _LOGIN_RE.search(final_url))
+        denied = result.status in (401, 403) and (
+            result.is_api or task.source in ("imported", "openapi", "js", "render"))
+        if denied or login_redirect:
+            self._auth_failures += 1
+            if self._auth_failures >= self.cfg.auth_fail_threshold and not self._auth_warned:
+                self._auth_warned = True
+                self._log(f"[!] WARNING: {self._auth_failures} authenticated requests returned "
+                          "401/403 or redirected to login — your session may be expired or the "
+                          "token isn't being applied (check --storage-state / --bearer / cookies).")
 
     def _scan_secrets(self, text: str, url: str) -> None:
         for f in secrets.scan(text, redact=self.cfg.redact_secrets):
@@ -208,6 +234,11 @@ class Crawler:
             sp = urlsplit(s)
             if sp.scheme and sp.netloc:
                 origins.add(f"{sp.scheme}://{sp.netloc}")
+        for _, url in self.cfg.import_entries:
+            sp = urlsplit(url)
+            host = sp.netloc.split("@")[-1].split(":")[0]
+            if sp.scheme and sp.netloc and self.scope.host_in_scope(host):
+                origins.add(f"{sp.scheme}://{sp.netloc}")
         return origins
 
     async def _seed(self) -> None:
@@ -215,8 +246,56 @@ class Crawler:
             url = self.scope.normalize(s)
             if url:
                 await self.frontier.add(Task(url=url, method="GET", depth=0, source="seed"))
+        await self._seed_imports()
+        if self.cfg.urlfinder:
+            await self._seed_urlfinder()
         if self.cfg.crawl_sitemap or self.cfg.respect_robots:
             await self._seed_robots_sitemap()
+
+    async def _seed_imports(self) -> None:
+        if not self.cfg.import_entries:
+            return
+        n_in = 0
+        for method, url in self.cfg.import_entries:
+            n = self.scope.normalize(url)
+            if not n:
+                continue
+            if self.scope.in_scope(n):
+                if method != "GET":
+                    self._record_discovery(n, "imported", 0, "import",
+                                           f"imported-{method.lower()}",
+                                           is_api=extract.looks_like_api(n))
+                if await self.frontier.add(Task(url=n, method="GET", depth=0,
+                                                referrer="import", source="imported")):
+                    n_in += 1
+            else:
+                self._record_discovery(n, "imported", 0, "import", "out-of-scope")
+        self._log(f"[*] imported {len(self.cfg.import_entries)} captured request(s), "
+                  f"{n_in} in-scope queued")
+
+    async def _seed_urlfinder(self) -> None:
+        from . import passive
+        domains = sorted(self.scope.reg_domains)
+        if not domains:
+            return
+        self._log(f"[*] urlfinder: passive URL discovery over {len(domains)} domain(s)")
+        loop = asyncio.get_event_loop()
+        urls = await loop.run_in_executor(
+            None, passive.run_urlfinder, domains, self.cfg.urlfinder_path)
+        if urls is None:
+            self._log("[!] urlfinder binary not found — skipping "
+                      "(install: go install github.com/projectdiscovery/urlfinder/cmd/urlfinder@latest)")
+            return
+        added = 0
+        for u in urls:
+            n = self.scope.normalize(u)
+            if n and self.scope.in_scope(n):
+                if self.scope.is_asset(n) and not self.cfg.include_assets:
+                    continue
+                if await self.frontier.add(Task(url=n, method="GET", depth=1,
+                                                referrer="urlfinder", source="passive")):
+                    added += 1
+        self._log(f"[+] urlfinder: {len(urls)} URLs found, {added} in-scope queued")
 
     async def _seed_robots_sitemap(self) -> None:
         for origin in self._origins():
@@ -240,7 +319,6 @@ class Crawler:
         resp = await self.http.request("GET", url)
         if not resp or resp.status_code >= 400:
             return
-        import re
         for m in re.finditer(r"<loc>\s*([^<\s]+)\s*</loc>", resp.text, re.IGNORECASE):
             loc = m.group(1).strip()
             if loc.endswith(".xml"):
@@ -345,12 +423,16 @@ class Crawler:
 
     # -- public ------------------------------------------------------------
     async def run(self) -> dict:
-        mode = "authenticated" if (self.cfg.headers or self.cfg.cookies or
-                                   self.cfg.bearer or self.cfg.storage_state) else "unauthenticated"
+        self._authed = bool(self.cfg.headers or self.cfg.cookies or
+                            self.cfg.bearer or self.cfg.storage_state)
+        mode = "authenticated" if self._authed else "unauthenticated"
         self._log(f"[*] arachne starting | {mode} | seeds={len(self.cfg.seeds)} "
                   f"| concurrency={self.cfg.concurrency} | depth={self.cfg.max_depth} "
                   f"| render={'on' if self.cfg.render else 'off'}"
                   + (f" | proxy={self.cfg.proxy}" if self.cfg.proxy else ""))
+        if self.cfg.token_bridged:
+            self._log("[*] bridged Authorization token from storage_state localStorage "
+                      "into the static engine")
         # build loop-bound objects now that the event loop is running
         self.frontier = Frontier(self.cfg, self.scope)
         self.http = HttpClient(self.cfg)
@@ -365,12 +447,14 @@ class Crawler:
             if self.cfg.render:
                 await self._render_phase()
         finally:
+            self.out.auth_failures = self._auth_failures
             await self.http.aclose()
             summary = self.out.close()
         self._log(f"[+] done | fetched {self._fetched} | urls {summary['unique_urls']} "
                   f"| api {summary['api_endpoints']} | openapi {summary['openapi_endpoints']} "
                   f"| graphql {summary['graphql_endpoints']} | js {summary['js_files']} "
                   f"| params {summary['params']} | candidates {summary['candidates']} "
-                  f"| secrets {summary['secrets']}")
+                  f"| secrets {summary['secrets']}"
+                  + (f" | auth-failures {self._auth_failures}" if self._auth_failures else ""))
         self._log(f"[+] output written to: {self.cfg.output_dir}/")
         return summary

@@ -9,6 +9,7 @@ from typing import List
 from . import __version__
 from .config import Config, DEFAULT_SKIP_EXT, DEFAULT_USER_AGENT
 from .auth import (parse_header_args, parse_cookie_arg, load_auth_json, apply_auth)
+from . import importers
 from .crawler import Crawler
 
 BANNER = r"""
@@ -106,6 +107,26 @@ output files (in -o dir):
                    help="bundle: {headers,cookies,bearer,storage_state}")
     g.add_argument("--storage-state", metavar="FILE",
                    help="Playwright storage_state json (used by --render and for cookies)")
+    g.add_argument("--auth-header", default="Authorization", metavar="NAME",
+                   help="header name for --bearer / bridged token (default Authorization)")
+    g.add_argument("--auth-scheme", default="Bearer", metavar="SCHEME",
+                   help="auth scheme prefix (default 'Bearer'; pass '' for a raw token)")
+    g.add_argument("--auth-token-key", metavar="KEY",
+                   help="localStorage key holding the token (default: auto-detect)")
+    g.add_argument("--no-auto-token", action="store_true",
+                   help="don't bridge a localStorage token from --storage-state to the static engine")
+
+    # passive import / seeding
+    g = p.add_argument_group("passive import / seeding")
+    g.add_argument("--har", metavar="FILE", help="seed from a HAR capture")
+    g.add_argument("--postman", metavar="FILE", help="seed from a Postman collection")
+    g.add_argument("--burp-xml", metavar="FILE", help="seed from a Burp Suite XML export")
+    g.add_argument("--import-auth", action="store_true",
+                   help="also adopt cookies + Authorization captured in the import")
+    g.add_argument("--urlfinder", action="store_true",
+                   help="run projectdiscovery/urlfinder for passive URL discovery (needs the binary)")
+    g.add_argument("--urlfinder-path", default="urlfinder", metavar="PATH",
+                   help="path to the urlfinder binary (default: urlfinder on PATH)")
 
     # discovery
     g = p.add_argument_group("discovery / extraction")
@@ -188,6 +209,12 @@ def config_from_args(ns: argparse.Namespace) -> Config:
         cookies_file=ns.cookies_file,
         bearer=ns.bearer,
         storage_state=ns.storage_state,
+        auth_header=ns.auth_header,
+        auth_scheme=ns.auth_scheme,
+        auto_token=not ns.no_auto_token,
+        auth_token_key=ns.auth_token_key,
+        urlfinder=ns.urlfinder,
+        urlfinder_path=ns.urlfinder_path,
         fetch_candidates=ns.fetch_candidates,
         scan_secrets=not ns.no_secrets,
         redact_secrets=not ns.show_secrets,
@@ -209,6 +236,16 @@ def config_from_args(ns: argparse.Namespace) -> Config:
         cfg.cookies.update(c)
         cfg.bearer = cfg.bearer or bearer
         cfg.storage_state = cfg.storage_state or storage
+
+    imp = importers.load_any(har=ns.har, postman=ns.postman, burp=ns.burp_xml)
+    if imp:
+        cfg.import_entries = imp.entries
+        if ns.import_auth:
+            for k, v in imp.cookies.items():
+                cfg.cookies.setdefault(k, v)
+            for k, v in imp.headers.items():
+                cfg.headers.setdefault(k, v)
+
     apply_auth(cfg)
     return cfg
 
@@ -216,10 +253,11 @@ def config_from_args(ns: argparse.Namespace) -> Config:
 def main(argv: List[str] = None) -> int:
     parser = build_parser()
     ns = parser.parse_args(argv)
-    if not ns.url and not ns.list:
-        parser.error("at least one seed is required (-u URL or -l FILE)")
+    has_import = bool(ns.har or ns.postman or ns.burp_xml)
+    if not ns.url and not ns.list and not (has_import and ns.scope):
+        parser.error("provide -u/-l, or an import (--har/--postman/--burp-xml) together with --scope")
     cfg = config_from_args(ns)
-    if not cfg.seeds:
+    if not cfg.seeds and not cfg.import_entries:
         parser.error("no valid seeds")
     if not cfg.quiet:
         sys.stderr.write(BANNER + "\n")

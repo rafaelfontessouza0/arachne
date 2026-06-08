@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Dict, List, Tuple, Optional
 
 from .config import Config
@@ -78,20 +79,100 @@ def load_auth_json(path: str) -> Tuple[Dict[str, str], Dict[str, str], Optional[
     return headers, cookies, bearer, storage_state
 
 
+_TOKEN_KEY_RE = re.compile(
+    r"(access[_-]?token|^token$|jwt|auth[_-]?token|id[_-]?token|bearer|"
+    r"accesstoken|authtoken|idtoken)", re.I)
+_JWT_RE = re.compile(r"^eyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}$")
+
+
+def _search_token_in_obj(obj) -> Optional[str]:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, str) and v and _TOKEN_KEY_RE.search(str(k)):
+                return v
+        for v in obj.values():
+            r = _search_token_in_obj(v)
+            if r:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = _search_token_in_obj(v)
+            if r:
+                return r
+    elif isinstance(obj, str) and _JWT_RE.match(obj.strip()):
+        return obj.strip()
+    return None
+
+
+def _token_from_value(value: str) -> Optional[str]:
+    value = str(value).strip()
+    if _JWT_RE.match(value):
+        return value
+    if value.startswith("{"):
+        try:
+            return _search_token_in_obj(json.loads(value))
+        except Exception:
+            pass
+    if 8 <= len(value) <= 4096 and " " not in value and "\n" not in value:
+        return value
+    return None
+
+
+def extract_token_from_storage(state: dict, key: Optional[str] = None) -> Optional[str]:
+    """Find a bearer token in a Playwright storage_state's localStorage."""
+    for origin in state.get("origins", []) or []:
+        ls = origin.get("localStorage", [])
+        items: List[Tuple] = []
+        if isinstance(ls, list):
+            items = [(i.get("name"), i.get("value")) for i in ls if isinstance(i, dict)]
+        elif isinstance(ls, dict):
+            items = list(ls.items())
+        for name, value in items:
+            if not value:
+                continue
+            if key:
+                if name == key:
+                    t = _token_from_value(value)
+                    if t:
+                        return t
+                continue
+            if name and _TOKEN_KEY_RE.search(str(name)):
+                t = _token_from_value(value)
+                if t:
+                    return t
+            sval = str(value).strip()
+            if _JWT_RE.match(sval):
+                return sval
+            if sval.startswith("{"):
+                try:
+                    t = _search_token_in_obj(json.loads(sval))
+                    if t:
+                        return t
+                except Exception:
+                    pass
+    return None
+
+
 def apply_auth(cfg: Config) -> None:
-    """Mutate cfg in place, merging all auth sources into cfg.headers/cookies."""
+    """Merge all auth sources into cfg.headers/cookies and, when possible, bridge a
+    localStorage token from storage_state into the static (httpx) engine."""
     if cfg.cookies_file:
         cfg.cookies.update(load_cookies_file(cfg.cookies_file))
     if cfg.storage_state and os.path.exists(cfg.storage_state):
-        # Pull cookies out of a Playwright storage_state so they also apply to httpx.
         try:
             with open(cfg.storage_state, "r", encoding="utf-8") as fh:
                 state = json.load(fh)
+        except Exception:
+            state = None
+        if isinstance(state, dict):
             for c in state.get("cookies", []):
                 if c.get("name") and c.get("value") is not None:
                     cfg.cookies.setdefault(str(c["name"]), str(c["value"]))
-        except Exception:
-            pass
+            if cfg.auto_token and not cfg.bearer and cfg.auth_header not in cfg.headers:
+                tok = extract_token_from_storage(state, cfg.auth_token_key)
+                if tok:
+                    cfg.bearer = tok
+                    cfg.token_bridged = True
 
 
 def is_authenticated(cfg: Config) -> bool:

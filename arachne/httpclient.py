@@ -44,7 +44,8 @@ class HttpClient:
         headers = {"User-Agent": cfg.user_agent}
         headers.update(cfg.headers)
         if cfg.bearer:
-            headers["Authorization"] = f"Bearer {cfg.bearer}"
+            scheme = (cfg.auth_scheme + " ") if cfg.auth_scheme else ""
+            headers[cfg.auth_header or "Authorization"] = f"{scheme}{cfg.bearer}"
 
         limits = httpx.Limits(max_connections=cfg.concurrency,
                               max_keepalive_connections=cfg.concurrency)

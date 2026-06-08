@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 # Asset extensions we record but never recurse into (and skip entirely unless --include-assets).
 DEFAULT_SKIP_EXT = {
@@ -67,6 +67,17 @@ class Config:
     cookies_file: Optional[str] = None
     bearer: Optional[str] = None
     storage_state: Optional[str] = None  # Playwright storage_state json
+    auth_header: str = "Authorization"
+    auth_scheme: str = "Bearer"          # set "" for a raw token with no scheme
+    auto_token: bool = True              # bridge a localStorage token from storage_state
+    auth_token_key: Optional[str] = None
+    token_bridged: bool = False          # set when a token was auto-bridged (for logging)
+
+    # Passive seeding (HAR / Postman / Burp import, urlfinder)
+    import_entries: List[Tuple[str, str]] = field(default_factory=list)  # (method, url)
+    auth_fail_threshold: int = 10
+    urlfinder: bool = False
+    urlfinder_path: str = "urlfinder"
 
     # Browser / render
     render: bool = False

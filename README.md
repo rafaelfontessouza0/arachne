@@ -37,6 +37,12 @@ diff the two surfaces.
   dedicated `api.txt`.
 - **Auth, any form** — header / cookie string / cookie file / bearer token /
   `--auth-json` bundle / Playwright `storage_state`.
+- **Unified auth** — bridges a `localStorage` JWT from `storage_state` into the
+  static engine (so token-in-localStorage SPAs are *actually* authenticated, not
+  just the render pass), and **warns when the session expires** mid-crawl.
+- **Passive seeding** — import a captured session from **HAR / Postman / Burp**
+  (optionally adopting its auth), or run **projectdiscovery/urlfinder** for
+  passive URL discovery.
 - **Burp-friendly** — `--burp` routes everything through `127.0.0.1:8080` with
   TLS verification off, in one flag.
 - **Scope control** — registered-domain or exact-host scoping, allow/deny
@@ -83,6 +89,8 @@ consolidates into one:
 - **ffuf**, **kiterunner** → API-route flagging from the crawl corpus (`api.txt`)
 - **Arjun** → query/form parameter extraction (`params.txt`)
 - **chrome-devtools MCP** → `--render` network capture
+- **projectdiscovery/urlfinder** → optional external integration (`--urlfinder`) for passive URL discovery
+- **HAR / Postman / Burp** → passive session import (`--har` / `--postman` / `--burp-xml`)
 
 > Out of scope by design: vulnerability scanners such as **nuclei**. `arachne`
 > is a crawler/spider, not a scanner — feed its `api.txt` / `urls.txt` into the
@@ -160,12 +168,54 @@ comm -13 <(sort out-anon/api.txt) <(sort out-auth/api.txt)   # auth-only endpoin
 | `--cookies-file FILE` | cookies as JSON (`{k:v}` or `[{name,value}]`) or Netscape `cookies.txt` |
 | `--bearer TOKEN` | shortcut for `Authorization: Bearer TOKEN` |
 | `--auth-json FILE` | bundle of `headers` + `cookies` + `bearer` + `storage_state` (see `examples/auth.example.json`) |
-| `--storage-state FILE` | Playwright `storage_state` — used by `--render` and its cookies are also applied to the static crawl |
+| `--storage-state FILE` | Playwright `storage_state` — cookies **and** a `localStorage` token are applied to the static crawl, and the session is reused by `--render` |
+| `--auth-token-key KEY` | localStorage key holding the token (default: auto-detect) |
+| `--auth-header NAME` / `--auth-scheme SCHEME` | customise the auth header/scheme (e.g. `--auth-header X-Auth-Token --auth-scheme ""` for a raw token) |
+| `--no-auto-token` | disable bridging a localStorage token to the static engine |
+
+**Unified auth (cookies *and* localStorage).** Many SPAs keep the JWT in
+`localStorage` and send it as `Authorization: Bearer`, not as a cookie. arachne
+extracts that token from a Playwright `storage_state.json` and applies it to the
+**static** `httpx` engine too — so a `--storage-state` crawl is genuinely
+authenticated for token-in-localStorage APIs, not just the render pass. It also
+**warns when your session expires** mid-crawl (a burst of 401/403s or
+login-redirects on authenticated requests is surfaced, and counted in
+`summary.json` as `auth_failures`).
 
 Easiest path for a logged-in session: log in once in a browser, export the
 cookies (e.g. from Burp or a browser extension) into a JSON file, and pass
 `--cookies-file`. For SPA flows, save a Playwright `storage_state.json` and pass
-`--storage-state` so both the static and render phases share the session.
+`--storage-state`.
+
+---
+
+## Passive import / seeding
+
+Map an authenticated API the high-yield way: drive the app through a proxy (or
+record it), then let arachne expand from the **real** authenticated requests.
+
+| Flag | Use |
+|------|-----|
+| `--har FILE` | seed from a HAR capture (browser DevTools, mitmproxy, …) |
+| `--postman FILE` | seed from a Postman collection (v2.1) |
+| `--burp-xml FILE` | seed from a Burp Suite XML export |
+| `--import-auth` | also adopt the cookies + `Authorization` header found in the import |
+| `--urlfinder` | run [`projectdiscovery/urlfinder`](https://github.com/projectdiscovery/urlfinder) for passive URL discovery and fold the results into the crawl |
+
+```bash
+# crawl + expand from a Burp-captured authenticated session
+python -m arachne -u https://app.target.tld --burp-xml capture.xml --import-auth
+
+# passive URL discovery (needs the urlfinder binary on PATH) + active crawl
+python -m arachne -u https://target.tld --urlfinder -d 2
+```
+
+Imported requests are crawled **read-only** (GET-probed) — original non-GET
+methods are recorded in `endpoints.jsonl` but never replayed. Imports require a
+scope: pass `-u`/`-l`, or `--scope DOMAIN` when seeding purely from a capture.
+`urlfinder` is an optional external binary — install with
+`go install github.com/projectdiscovery/urlfinder/cmd/urlfinder@latest`; if it's
+absent the crawl continues without it.
 
 ---
 
@@ -183,7 +233,11 @@ All files land in the `-o` directory (default `arachne-out/`):
 | `candidates.txt` | low-confidence mined endpoints (not auto-fetched; review manually or rerun with `--fetch-candidates`) |
 | `secrets.jsonl` | detected secrets — `{type, confidence, match, url}`, redacted unless `--show-secrets` |
 | `graphql.json` | introspected GraphQL schemas (queries, mutations, types) per endpoint |
-| `summary.json` | counts by status / source / secret type |
+| `summary.json` | counts by status / source / secret type, plus `auth_failures` (session-health) |
+
+The `source` field on each record tells you where it came from: `seed`, `html`,
+`js`, `json`, `render`, `openapi`, `graphql`, `imported` (HAR/Postman/Burp), or
+`passive` (urlfinder).
 
 ---
 
@@ -196,6 +250,8 @@ budget       -d DEPTH  -m MAX_PAGES  -c CONCURRENCY  --rate RPS  --delay S
 safety       --allow-active  --respect-robots  --no-sitemap
 transport    --proxy URL  --burp  -k/--insecure  -A UA  --no-redirects
 auth         -H  -b  --cookies-file  --bearer  --auth-json  --storage-state
+             --auth-token-key  --auth-header  --auth-scheme  --no-auto-token
+passive      --har FILE  --postman FILE  --burp-xml FILE  --import-auth  --urlfinder
 discovery    --no-api-docs  --no-graphql  --no-secrets  --show-secrets  --fetch-candidates
 render       --render  --render-pages N  --render-wait MS  --no-scroll  --headful
 output       -o DIR  -q  -v
