@@ -38,35 +38,41 @@ diff the two surfaces.
 
 ---
 
-## Tools it consolidates (lineage)
+## The 15 crawling/spidering tools it replaces
 
-`arachne` rolls the capabilities of a full web/API reconnaissance crawler +
-spider stack into one tool. Each external tool below is part of the lineage it
-draws from, mapped to the built-in `arachne` capability that covers it:
+> **`arachne` does not shell out to or depend on these tools — it reimplements
+> their capabilities natively in a single Python codebase.** The only two from
+> this stack it actually *uses as libraries* are **httpx** (its HTTP engine) and
+> **Playwright** (for the optional `--render` mode). Everything else is rebuilt,
+> not invoked.
 
-**Dynamic / browser crawlers** — JS execution + XHR/fetch capture
-- **Playwright**, **Puppeteer**, **Crawlee** (PlaywrightCrawler), **Katana** (headless)
-  → `--render` mode: headless Chromium, auto-scroll, full network capture
+These are the 15 dedicated web + API crawler/spider tools that `arachne`
+consolidates into one:
 
-**Static / fast link-extraction spiders**
-- **GoSpider**, **hakrawler**, **Scrapy**
-  → core async `httpx` crawl + HTML link/form extractor
+| # | Tool | Category | Covered by | Relationship |
+|---|------|----------|------------|--------------|
+| 1 | Playwright | dynamic browser crawler | `--render` | **uses** (library) |
+| 2 | Puppeteer | dynamic browser crawler | `--render` | reimplemented |
+| 3 | Crawlee (PlaywrightCrawler) | dynamic browser crawler | `--render` + async frontier | reimplemented |
+| 4 | Katana (headless) | dynamic browser crawler | `--render` | reimplemented |
+| 5 | GoSpider | static spider | core async crawl | reimplemented |
+| 6 | hakrawler | static spider | core async crawl | reimplemented |
+| 7 | Scrapy | static spider | async crawl + HTML extractor | reimplemented |
+| 8 | gau | passive URL collection | seed lists + sitemap/robots | reimplemented |
+| 9 | waybackurls | passive URL collection | seed lists + sitemap/robots | reimplemented |
+| 10 | subjs | JS URL extraction | JS endpoint miner | reimplemented |
+| 11 | getJS | JS URL extraction | JS endpoint miner | reimplemented |
+| 12 | LinkFinder | JS endpoint extraction | JS miner (LinkFinder-style regex) | reimplemented |
+| 13 | SecretFinder | JS secret extraction | JS / JSON mining | reimplemented |
+| 14 | xnLinkFinder | JS endpoint + param extraction | JS miner + param extraction | reimplemented |
+| 15 | mantra | JS secret scanning | JS / JSON mining | reimplemented |
 
-**Passive URL collection**
-- **gau**, **waybackurls**
-  → seed lists (`-l seeds.txt`) plus `robots.txt` / `sitemap.xml` seeding
+### Supporting discovery tools also folded in
 
-**JavaScript endpoint / secret extraction**
-- **subjs**, **getJS**, **LinkFinder**, **SecretFinder**, **xnLinkFinder**, **mantra**
-  → built-in JS endpoint miner (LinkFinder-style regex over bundles + inline scripts) and JSON URL walking
-
-**Live probing / route & parameter discovery**
-- **httpx**, **ffuf**, **kiterunner**, **Arjun**
-  → in-scope fetch/validation, query/form parameter extraction, API-route flagging (`api.txt`)
-
-**In-session capture**
-- **chrome-devtools MCP** (XHR matrix)
-  → `--render` network capture
+- **httpx** → async fetch/validation engine (**used** as a library)
+- **ffuf**, **kiterunner** → API-route flagging from the crawl corpus (`api.txt`)
+- **Arjun** → query/form parameter extraction (`params.txt`)
+- **chrome-devtools MCP** → `--render` network capture
 
 > Out of scope by design: vulnerability scanners such as **nuclei**. `arachne`
 > is a crawler/spider, not a scanner — feed its `api.txt` / `urls.txt` into the
