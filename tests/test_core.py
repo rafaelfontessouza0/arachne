@@ -187,6 +187,29 @@ async def _gather(ra, gens):
     return await asyncio.gather(*[ra.refresh(g) for g in gens])
 
 
+def test_per_host_rate_limiters_isolated():
+    import asyncio
+    from arachne.config import Config
+    from arachne.httpclient import HttpClient
+
+    async def run():
+        cfg = Config(seeds=["https://t.tld/"], rate=5.0, concurrency=4, per_host_concurrency=2)
+        h = HttpClient(cfg)
+        try:
+            la = h._limiter("a.tld")
+            lb = h._limiter("b.tld")
+            assert la is not lb                 # each host gets its own bucket
+            assert h._limiter("a.tld") is la    # and it's cached
+            assert la.rate == 5.0
+            assert h.backend == "httpx"         # no --impersonate -> httpx backend
+            sa = h._host_sem("a.tld")
+            assert sa is not None and h._host_sem("a.tld") is sa
+        finally:
+            await h.aclose()
+
+    asyncio.run(run())
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

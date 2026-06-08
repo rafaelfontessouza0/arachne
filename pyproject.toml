@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arachne-spider"
-version = "0.4.0"
+version = "0.5.0"
 description = "Async web + API crawler/spider for authenticated and unauthenticated recon"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -20,7 +20,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-render = ["playwright>=1.30"]
+render = ["playwright>=1.30", "playwright-stealth>=1.0.6"]
+impersonate = ["curl_cffi>=0.5"]
 
 [project.scripts]
 arachne = "arachne.cli:main"

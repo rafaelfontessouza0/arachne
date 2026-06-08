@@ -76,7 +76,7 @@ output files (in -o dir):
     g.add_argument("-c", "--concurrency", type=int, default=20,
                    help="concurrent requests (default 20)")
     g.add_argument("--rate", type=float, default=0.0,
-                   help="max requests/second (0 = unlimited)")
+                   help="max requests/second per host (0 = unlimited)")
     g.add_argument("--delay", type=float, default=0.0, help="fixed delay per request (sec)")
     g.add_argument("-t", "--timeout", type=float, default=20.0, help="request timeout (sec)")
     g.add_argument("--retries", type=int, default=2, help="retries on error/429 (default 2)")
@@ -96,6 +96,11 @@ output files (in -o dir):
     g.add_argument("-k", "--insecure", action="store_true", help="ignore TLS certificate errors")
     g.add_argument("-A", "--user-agent", default=DEFAULT_USER_AGENT, help="custom User-Agent")
     g.add_argument("--no-redirects", action="store_true", help="do not follow redirects")
+    g.add_argument("--impersonate", metavar="BROWSER",
+                   help="impersonate a browser TLS/JA3 fingerprint via curl_cffi "
+                        "(e.g. chrome124, safari17_0) — for WAF'd targets; needs curl_cffi")
+    g.add_argument("--host-concurrency", type=int, default=0, metavar="N",
+                   help="max concurrent requests per host (0 = global cap only)")
 
     # auth
     g = p.add_argument_group("authentication")
@@ -169,6 +174,10 @@ output files (in -o dir):
                    help="ms to wait after load for XHRs to fire (default 2500)")
     g.add_argument("--no-scroll", action="store_true", help="disable auto-scroll during render")
     g.add_argument("--headful", action="store_true", help="show the browser window")
+    g.add_argument("--browser-first", action="store_true",
+                   help="render seed pages with the browser BEFORE the static crawl (SPA-first)")
+    g.add_argument("--stealth", action="store_true",
+                   help="apply playwright-stealth during render/login (needs playwright-stealth)")
 
     # output
     g = p.add_argument_group("output")
@@ -228,6 +237,8 @@ def config_from_args(ns: argparse.Namespace) -> Config:
         insecure=insecure,
         user_agent=ns.user_agent,
         follow_redirects=not ns.no_redirects,
+        impersonate=ns.impersonate,
+        per_host_concurrency=ns.host_concurrency,
         headers=parse_header_args(ns.header),
         cookies=parse_cookie_arg(ns.cookie),
         cookies_file=ns.cookies_file,
@@ -259,6 +270,8 @@ def config_from_args(ns: argparse.Namespace) -> Config:
         render_wait=ns.render_wait,
         render_scroll=not ns.no_scroll,
         headful=ns.headful,
+        browser_first=ns.browser_first,
+        stealth=ns.stealth,
         output_dir=ns.output,
         quiet=ns.quiet,
         verbose=ns.verbose,

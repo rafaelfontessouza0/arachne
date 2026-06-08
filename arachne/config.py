@@ -60,6 +60,8 @@ class Config:
     insecure: bool = False
     user_agent: str = DEFAULT_USER_AGENT
     follow_redirects: bool = True
+    impersonate: Optional[str] = None    # curl_cffi browser profile, e.g. "chrome124"
+    per_host_concurrency: int = 0        # 0 = no per-host cap (global concurrency only)
 
     # Auth
     headers: Dict[str, str] = field(default_factory=dict)
@@ -97,6 +99,8 @@ class Config:
     render_wait: int = 2500      # ms to settle after load
     render_scroll: bool = True
     headful: bool = False
+    browser_first: bool = False          # render seeds before the static crawl (SPA-first)
+    stealth: bool = False                # apply playwright-stealth in render/login
 
     # Discovery / extraction
     fetch_candidates: bool = False   # also fetch weak (low-confidence) mined endpoints

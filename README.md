@@ -46,6 +46,13 @@ diff the two surfaces.
 - **Self-healing sessions** — on a `401`/login-redirect mid-crawl,
   re-authenticate automatically (Playwright login recipe or a `--reauth-command`
   hook) and retry the failed request with fresh credentials.
+- **Evasion-ready** — impersonate a real browser's **TLS/JA3 fingerprint**
+  (`--impersonate chrome124`, via `curl_cffi`) and apply `--stealth` to the
+  headless browser, for targets behind Cloudflare/Akamai.
+- **Browser-primary mode** — `--browser-first` renders the seeds *before* the
+  static crawl, so SPA routes and XHR/API calls are captured up front.
+- **Polite** — per-host token-bucket rate limiting (`--rate`) and per-host
+  concurrency caps (`--host-concurrency`), not just a global limit.
 - **Burp-friendly** — `--burp` routes everything through `127.0.0.1:8080` with
   TLS verification off, in one flag.
 - **Scope control** — registered-domain or exact-host scoping, allow/deny
@@ -121,6 +128,9 @@ pip install -r requirements.txt           # core crawler
 
 # optional — only for --render (SPA / XHR capture):
 pip install playwright && playwright install chromium
+
+# optional — TLS impersonation (--impersonate) and browser stealth (--stealth):
+pip install curl_cffi playwright-stealth
 ```
 
 Or install as a command:
@@ -146,6 +156,9 @@ python -m arachne -l seeds.txt --bearer "eyJ..." --allow "/api/" -c 40
 
 # reuse a Playwright login session and crawl SPA routes
 python -m arachne -u https://target.tld --storage-state state.json --render
+
+# WAF-resistant SPA crawl: impersonate Chrome's TLS fingerprint, render seeds first
+python -m arachne -u https://app.target.tld --impersonate chrome124 --browser-first --stealth
 ```
 
 If installed with `pip install -e .`, replace `python -m arachne` with `arachne`.
@@ -286,15 +299,15 @@ The `source` field on each record tells you where it came from: `seed`, `html`,
 ```
 targets      -u URL (repeatable) | -l FILE | --scope DOMAIN
 scope        --no-subdomains  --allow REGEX  --deny REGEX  --include-assets
-budget       -d DEPTH  -m MAX_PAGES  -c CONCURRENCY  --rate RPS  --delay S
+budget       -d DEPTH  -m MAX_PAGES  -c CONCURRENCY  --rate RPS/host  --host-concurrency N  --delay S
 safety       --allow-active  --respect-robots  --no-sitemap
-transport    --proxy URL  --burp  -k/--insecure  -A UA  --no-redirects
+transport    --proxy URL  --burp  -k/--insecure  -A UA  --no-redirects  --impersonate BROWSER
 auth         -H  -b  --cookies-file  --bearer  --auth-json  --storage-state
              --auth-token-key  --auth-header  --auth-scheme  --no-auto-token
 passive      --har FILE  --postman FILE  --burp-xml FILE  --import-auth  --urlfinder
 reauth       --login-url  --login-user  --login-pass  --login-recipe  --reauth-command  --reauth-max
 discovery    --no-api-docs  --no-graphql  --no-secrets  --show-secrets  --fetch-candidates
-render       --render  --render-pages N  --render-wait MS  --no-scroll  --headful
+render       --render  --browser-first  --stealth  --render-pages N  --render-wait MS  --headful
 output       -o DIR  -q  -v
 ```
 

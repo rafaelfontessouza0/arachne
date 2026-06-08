@@ -14,6 +14,21 @@ class PlaywrightUnavailable(RuntimeError):
     pass
 
 
+async def _apply_stealth(page) -> None:
+    """Apply playwright-stealth to a page if the package is available (best effort)."""
+    try:
+        from playwright_stealth import stealth_async  # older API
+        await stealth_async(page)
+        return
+    except Exception:
+        pass
+    try:
+        from playwright_stealth import Stealth  # newer API
+        await Stealth().apply_stealth_async(page)
+    except Exception:
+        pass
+
+
 class BrowserRenderer:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -84,6 +99,8 @@ class BrowserRenderer:
         """Navigate to url; return (captured network requests, DOM link set)."""
         captured: List[Dict] = []
         page = await self._context.new_page()
+        if self.cfg.stealth:
+            await _apply_stealth(page)
 
         def on_request(req) -> None:
             captured.append({"url": req.url, "method": req.method,
@@ -156,6 +173,8 @@ async def login_to_storage_state(cfg) -> Optional[dict]:
     ctx = await browser.new_context(ignore_https_errors=cfg.insecure, user_agent=cfg.user_agent)
     try:
         page = await ctx.new_page()
+        if cfg.stealth:
+            await _apply_stealth(page)
         await page.goto(cfg.login_url, wait_until="domcontentloaded",
                         timeout=int(cfg.timeout * 1000))
         if cfg.login_username:

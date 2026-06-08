@@ -37,6 +37,7 @@ class Crawler:
         self._discovery_seen: Set[Tuple[str, str]] = set()
         self._secret_seen: Set[Tuple[str, str]] = set()
         self._sitemap_seen: Set[str] = set()
+        self._rendered: Set[str] = set()
         self._fetched = 0
         self._authed = False
         self._auth_failures = 0
@@ -412,25 +413,28 @@ class Crawler:
                       f"{len(summary.get('mutations', []))} mutations)")
 
     # -- render phase ------------------------------------------------------
-    async def _render_phase(self) -> None:
+    async def _render_phase(self, pages=None, drain: bool = True) -> None:
         from .browser import BrowserRenderer, PlaywrightUnavailable
-        pages = []
+        source_pages = (self.cfg.seeds + self.html_pages) if pages is None else pages
+        norm: List[str] = []
         seen = set()
-        for u in self.cfg.seeds + self.html_pages:
+        for u in source_pages:
             n = self.scope.normalize(u)
-            if n and n not in seen:
+            if n and n not in seen and n not in self._rendered:
                 seen.add(n)
-                pages.append(n)
-            if len(pages) >= self.cfg.render_pages:
+                norm.append(n)
+            if len(norm) >= self.cfg.render_pages:
                 break
-        if not pages:
+        if not norm:
             return
-        self._log(f"[*] render phase: {len(pages)} page(s) via headless Chromium")
+        self._log(f"[*] render phase: {len(norm)} page(s) via headless Chromium"
+                  + (" (stealth)" if self.cfg.stealth else ""))
         try:
             async with BrowserRenderer(self.cfg) as br:
-                for i, url in enumerate(pages, 1):
+                for i, url in enumerate(norm, 1):
+                    self._rendered.add(url)
                     captured, dom_links = await br.render(url)
-                    self._vlog(f"  [render {i}/{len(pages)}] {url} "
+                    self._vlog(f"  [render {i}/{len(norm)}] {url} "
                                f"({len(captured)} requests, {len(dom_links)} links)")
                     for raw in dom_links:
                         await self._enqueue_link(raw, url, 1, url, "render")
@@ -442,7 +446,8 @@ class Crawler:
         except PlaywrightUnavailable as exc:
             self._log(f"[!] {exc}")
             return
-        await self._drain()
+        if drain:
+            await self._drain()
 
     # -- public ------------------------------------------------------------
     async def run(self) -> dict:
@@ -459,6 +464,10 @@ class Crawler:
         # build loop-bound objects now that the event loop is running
         self.frontier = Frontier(self.cfg, self.scope)
         self.http = HttpClient(self.cfg)
+        if self.cfg.impersonate:
+            self._log(f"[*] TLS impersonation: {self.cfg.impersonate} (curl_cffi backend)")
+        if self.cfg.per_host_concurrency:
+            self._log(f"[*] per-host concurrency cap: {self.cfg.per_host_concurrency}")
         from .reauth import ReAuth
         self.reauth = ReAuth(self.cfg, self.http, self._log)
         if self.reauth.enabled:
@@ -466,6 +475,9 @@ class Crawler:
                       f"(max {self.cfg.reauth_max} attempts)")
         try:
             await self._seed()
+            if self.cfg.browser_first:
+                self._log("[*] browser-first: rendering seeds before the static crawl")
+                await self._render_phase(pages=list(self.cfg.seeds), drain=False)
             await self._drain()
             if self.cfg.api_docs:
                 await self._discover_api_docs()
