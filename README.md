@@ -38,6 +38,50 @@ diff the two surfaces.
 
 ---
 
+## Tools it consolidates (lineage)
+
+`arachne` rolls the capabilities of a full web/API reconnaissance crawler +
+spider stack into one tool. Each external tool below is part of the lineage it
+draws from, mapped to the built-in `arachne` capability that covers it:
+
+**Dynamic / browser crawlers** — JS execution + XHR/fetch capture
+- **Playwright**, **Puppeteer**, **Crawlee** (PlaywrightCrawler), **Katana** (headless)
+  → `--render` mode: headless Chromium, auto-scroll, full network capture
+
+**Static / fast link-extraction spiders**
+- **GoSpider**, **hakrawler**, **Scrapy**
+  → core async `httpx` crawl + HTML link/form extractor
+
+**Passive URL collection**
+- **gau**, **waybackurls**
+  → seed lists (`-l seeds.txt`) plus `robots.txt` / `sitemap.xml` seeding
+
+**JavaScript endpoint / secret extraction**
+- **subjs**, **getJS**, **LinkFinder**, **SecretFinder**, **xnLinkFinder**, **mantra**
+  → built-in JS endpoint miner (LinkFinder-style regex over bundles + inline scripts) and JSON URL walking
+
+**Live probing / route & parameter discovery**
+- **httpx**, **ffuf**, **kiterunner**, **Arjun**
+  → in-scope fetch/validation, query/form parameter extraction, API-route flagging (`api.txt`)
+
+**In-session capture**
+- **chrome-devtools MCP** (XHR matrix)
+  → `--render` network capture
+
+> Out of scope by design: vulnerability scanners such as **nuclei**. `arachne`
+> is a crawler/spider, not a scanner — feed its `api.txt` / `urls.txt` into the
+> scanner of your choice.
+
+## Built with
+
+- **Python 3.9+**, `asyncio`
+- **httpx** — async HTTP/2 client
+- **selectolax** — fast HTML parsing (falls back to **beautifulsoup4** + **lxml**)
+- **tldextract** — scope / registered-domain logic
+- **Playwright** — optional, only for `--render`
+
+---
+
 ## Install
 
 Requires Python 3.9+.
