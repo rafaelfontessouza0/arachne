@@ -26,6 +26,7 @@ class Output:
         self.secrets_count = 0
         self.openapi_endpoints = 0
         self.auth_failures = 0
+        self.reauths = 0
         self.n_results = 0
 
     def write(self, r: Result) -> None:
@@ -83,6 +84,7 @@ class Output:
             "openapi_endpoints": self.openapi_endpoints,
             "graphql_endpoints": len(self.graphql),
             "auth_failures": self.auth_failures,
+            "reauths": self.reauths,
             "js_files": len(self.js),
             "params": len(self.params),
             "candidates": len(self.candidates),

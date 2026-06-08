@@ -1,0 +1,16 @@
+{
+  "_comment": "Pass with --login-recipe to auto-recover an expired session mid-crawl.",
+
+  "_browser_login": "Drive a real login form with Playwright:",
+  "url": "https://app.target.tld/login",
+  "username": "user@example.com",
+  "password": "REDACTED",
+  "user_selector": "input[name=email]",
+  "pass_selector": "input[type=password]",
+  "submit_selector": "button[type=submit]",
+  "success": "/dashboard",
+  "wait": 3000,
+
+  "_command_alt": "OR set 'command' to a shell command that prints fresh auth JSON, e.g. {\"cookies\":{\"sid\":\"...\"},\"headers\":{\"X-Api-Key\":\"...\"},\"bearer\":\"eyJ...\"}. Useful for OAuth refresh or curl-based logins.",
+  "command": null
+}

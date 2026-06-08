@@ -129,3 +129,61 @@ class BrowserRenderer:
             )
         except Exception:
             pass
+
+
+DEFAULT_USER_SELECTOR = ('input[type="email"], input[name="username"], '
+                         'input[name="email"], input[name="user"], input[type="text"]')
+DEFAULT_PASS_SELECTOR = 'input[type="password"]'
+DEFAULT_SUBMIT_SELECTOR = 'button[type="submit"], input[type="submit"], button'
+
+
+async def login_to_storage_state(cfg) -> Optional[dict]:
+    """Perform a form login with Playwright and return a fresh storage_state dict
+    (cookies + localStorage). Returns None if Playwright is missing or login fails."""
+    try:
+        from playwright.async_api import async_playwright
+    except Exception:
+        return None
+    user_sel = cfg.login_user_selector or DEFAULT_USER_SELECTOR
+    pass_sel = cfg.login_pass_selector or DEFAULT_PASS_SELECTOR
+    submit_sel = cfg.login_submit_selector or DEFAULT_SUBMIT_SELECTOR
+
+    pw = await async_playwright().start()
+    launch: Dict = {"headless": not cfg.headful}
+    if cfg.proxy:
+        launch["proxy"] = {"server": cfg.proxy}
+    browser = await pw.chromium.launch(**launch)
+    ctx = await browser.new_context(ignore_https_errors=cfg.insecure, user_agent=cfg.user_agent)
+    try:
+        page = await ctx.new_page()
+        await page.goto(cfg.login_url, wait_until="domcontentloaded",
+                        timeout=int(cfg.timeout * 1000))
+        if cfg.login_username:
+            await page.locator(user_sel).first.fill(cfg.login_username)
+        if cfg.login_password:
+            await page.locator(pass_sel).first.fill(cfg.login_password)
+        await page.locator(submit_sel).first.click()
+        try:
+            await page.wait_for_load_state("networkidle", timeout=int(cfg.timeout * 1000))
+        except Exception:
+            pass
+        success = cfg.login_success
+        if success:
+            try:
+                if success.startswith("http") or success.startswith("/"):
+                    await page.wait_for_url("**" + success + "**", timeout=int(cfg.timeout * 1000))
+                else:
+                    await page.wait_for_selector(success, timeout=int(cfg.timeout * 1000))
+            except Exception:
+                pass
+        await page.wait_for_timeout(cfg.login_wait)
+        return await ctx.storage_state()
+    except Exception:
+        return None
+    finally:
+        try:
+            await ctx.close()
+            await browser.close()
+            await pw.stop()
+        except Exception:
+            pass

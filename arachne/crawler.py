@@ -41,6 +41,7 @@ class Crawler:
         self._authed = False
         self._auth_failures = 0
         self._auth_warned = False
+        self.reauth = None  # built in run()
 
     # -- logging -----------------------------------------------------------
     def _log(self, msg: str) -> None:
@@ -129,8 +130,6 @@ class Crawler:
             redirected_to=(final_url if str(task.url) != final_url else None),
         )
 
-        self._check_auth_health(task, result, final_url)
-
         if len(body) > MAX_TEXT_BYTES:
             self.out.write(result)
             return
@@ -171,21 +170,45 @@ class Crawler:
 
         self.out.write(result)
 
-    def _check_auth_health(self, task: Task, result: Result, final_url: str) -> None:
-        """Surface a session-expiry warning when authenticated requests start
-        failing with 401/403 or redirecting to a login page."""
-        if not self._authed or result.status is None:
+    async def _fetch(self, task: Task):
+        """Fetch with mid-crawl re-auth: on a dead session, re-authenticate once
+        (deduped across workers) and retry the request with fresh credentials."""
+        gen = self.reauth.generation if self.reauth else 0
+        resp = await self.http.request(task.method, task.url)
+        if resp is None:
+            return None
+        failure, dead = self._auth_signal(task, resp)
+        if failure:
+            self._record_auth_failure()
+        if dead and self.reauth and self.reauth.enabled:
+            if await self.reauth.refresh(gen):
+                retry = await self.http.request(task.method, task.url)
+                if retry is not None:
+                    resp = retry
+        return resp
+
+    def _auth_signal(self, task: Task, resp) -> Tuple[bool, bool]:
+        """Return (counts_as_failure, session_dead) for an authenticated response."""
+        if not self._authed:
+            return (False, False)
+        final_url = str(resp.url)
+        login_redirect = (str(task.url) != final_url) and bool(_LOGIN_RE.search(final_url))
+        failure = resp.status_code in (401, 403) or login_redirect
+        dead = resp.status_code == 401 or login_redirect
+        return (failure, dead)
+
+    def _record_auth_failure(self) -> None:
+        self._auth_failures += 1
+        if self._auth_warned:
             return
-        login_redirect = bool(result.redirected_to and _LOGIN_RE.search(final_url))
-        denied = result.status in (401, 403) and (
-            result.is_api or task.source in ("imported", "openapi", "js", "render"))
-        if denied or login_redirect:
-            self._auth_failures += 1
-            if self._auth_failures >= self.cfg.auth_fail_threshold and not self._auth_warned:
-                self._auth_warned = True
-                self._log(f"[!] WARNING: {self._auth_failures} authenticated requests returned "
-                          "401/403 or redirected to login — your session may be expired or the "
-                          "token isn't being applied (check --storage-state / --bearer / cookies).")
+        if self.reauth and self.reauth.enabled:
+            return  # re-auth handles recovery and logs separately
+        if self._auth_failures >= self.cfg.auth_fail_threshold:
+            self._auth_warned = True
+            self._log(f"[!] WARNING: {self._auth_failures} authenticated requests returned "
+                      "401/403 or redirected to login — your session may be expired or the "
+                      "token isn't being applied (check --storage-state / --bearer / cookies, "
+                      "or set --login-url / --reauth-command to auto-recover).")
 
     def _scan_secrets(self, text: str, url: str) -> None:
         for f in secrets.scan(text, redact=self.cfg.redact_secrets):
@@ -202,7 +225,7 @@ class Crawler:
         while True:
             task = await self.frontier.get()
             try:
-                resp = await self.http.request(task.method, task.url)
+                resp = await self._fetch(task)
                 if resp is not None:
                     self._fetched += 1
                     await self._process(task, resp)
@@ -436,6 +459,11 @@ class Crawler:
         # build loop-bound objects now that the event loop is running
         self.frontier = Frontier(self.cfg, self.scope)
         self.http = HttpClient(self.cfg)
+        from .reauth import ReAuth
+        self.reauth = ReAuth(self.cfg, self.http, self._log)
+        if self.reauth.enabled:
+            self._log("[*] re-auth armed — will recover the session on 401/login-redirect "
+                      f"(max {self.cfg.reauth_max} attempts)")
         try:
             await self._seed()
             await self._drain()
@@ -448,6 +476,7 @@ class Crawler:
                 await self._render_phase()
         finally:
             self.out.auth_failures = self._auth_failures
+            self.out.reauths = self.reauth.reauths if self.reauth else 0
             await self.http.aclose()
             summary = self.out.close()
         self._log(f"[+] done | fetched {self._fetched} | urls {summary['unique_urls']} "
@@ -455,6 +484,7 @@ class Crawler:
                   f"| graphql {summary['graphql_endpoints']} | js {summary['js_files']} "
                   f"| params {summary['params']} | candidates {summary['candidates']} "
                   f"| secrets {summary['secrets']}"
-                  + (f" | auth-failures {self._auth_failures}" if self._auth_failures else ""))
+                  + (f" | auth-failures {self._auth_failures}" if self._auth_failures else "")
+                  + (f" | reauths {summary['reauths']}" if summary.get('reauths') else ""))
         self._log(f"[+] output written to: {self.cfg.output_dir}/")
         return summary

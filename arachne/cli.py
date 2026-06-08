@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from typing import List
 
@@ -128,6 +129,24 @@ output files (in -o dir):
     g.add_argument("--urlfinder-path", default="urlfinder", metavar="PATH",
                    help="path to the urlfinder binary (default: urlfinder on PATH)")
 
+    # re-authentication
+    g = p.add_argument_group("re-authentication (recover an expired session mid-crawl)")
+    g.add_argument("--login-url", metavar="URL",
+                   help="login page URL — enables browser-based re-auth on session death")
+    g.add_argument("--login-user", metavar="USER", help="username/email to fill on the login form")
+    g.add_argument("--login-pass", metavar="PASS", help="password to fill on the login form")
+    g.add_argument("--login-user-selector", metavar="CSS", help="CSS selector for the username field")
+    g.add_argument("--login-pass-selector", metavar="CSS", help="CSS selector for the password field")
+    g.add_argument("--login-submit-selector", metavar="CSS", help="CSS selector for the submit button")
+    g.add_argument("--login-success", metavar="SEL|URL",
+                   help="selector or URL substring that signals a successful login")
+    g.add_argument("--login-recipe", metavar="FILE",
+                   help="JSON login recipe (see examples/login.example.json)")
+    g.add_argument("--reauth-command", metavar="CMD",
+                   help="shell command that prints fresh auth JSON {cookies,headers,bearer}")
+    g.add_argument("--reauth-max", type=int, default=3, metavar="N",
+                   help="max re-auth attempts before giving up (default 3)")
+
     # discovery
     g = p.add_argument_group("discovery / extraction")
     g.add_argument("--no-api-docs", action="store_true",
@@ -182,6 +201,11 @@ def config_from_args(ns: argparse.Namespace) -> Config:
         proxy = proxy or "http://127.0.0.1:8080"
         insecure = True
 
+    recipe = {}
+    if ns.login_recipe:
+        with open(ns.login_recipe, "r", encoding="utf-8") as fh:
+            recipe = json.load(fh)
+
     cfg = Config(
         seeds=seeds,
         extra_scope=list(ns.scope),
@@ -213,6 +237,16 @@ def config_from_args(ns: argparse.Namespace) -> Config:
         auth_scheme=ns.auth_scheme,
         auto_token=not ns.no_auto_token,
         auth_token_key=ns.auth_token_key,
+        login_url=ns.login_url or recipe.get("url"),
+        login_username=ns.login_user or recipe.get("username"),
+        login_password=ns.login_pass or recipe.get("password"),
+        login_user_selector=ns.login_user_selector or recipe.get("user_selector"),
+        login_pass_selector=ns.login_pass_selector or recipe.get("pass_selector"),
+        login_submit_selector=ns.login_submit_selector or recipe.get("submit_selector"),
+        login_success=ns.login_success or recipe.get("success"),
+        login_wait=recipe.get("wait", 3000),
+        reauth_command=ns.reauth_command or recipe.get("command"),
+        reauth_max=ns.reauth_max,
         urlfinder=ns.urlfinder,
         urlfinder_path=ns.urlfinder_path,
         fetch_candidates=ns.fetch_candidates,

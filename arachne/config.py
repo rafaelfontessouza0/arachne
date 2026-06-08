@@ -73,6 +73,18 @@ class Config:
     auth_token_key: Optional[str] = None
     token_bridged: bool = False          # set when a token was auto-bridged (for logging)
 
+    # Re-authentication (recover an expired session mid-crawl)
+    login_url: Optional[str] = None
+    login_username: Optional[str] = None
+    login_password: Optional[str] = None
+    login_user_selector: Optional[str] = None
+    login_pass_selector: Optional[str] = None
+    login_submit_selector: Optional[str] = None
+    login_success: Optional[str] = None   # selector or URL substring signalling success
+    login_wait: int = 3000
+    reauth_command: Optional[str] = None  # shell cmd printing {cookies,headers,bearer}
+    reauth_max: int = 3
+
     # Passive seeding (HAR / Postman / Burp import, urlfinder)
     import_entries: List[Tuple[str, str]] = field(default_factory=list)  # (method, url)
     auth_fail_threshold: int = 10

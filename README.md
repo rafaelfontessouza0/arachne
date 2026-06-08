@@ -43,6 +43,9 @@ diff the two surfaces.
 - **Passive seeding** — import a captured session from **HAR / Postman / Burp**
   (optionally adopting its auth), or run **projectdiscovery/urlfinder** for
   passive URL discovery.
+- **Self-healing sessions** — on a `401`/login-redirect mid-crawl,
+  re-authenticate automatically (Playwright login recipe or a `--reauth-command`
+  hook) and retry the failed request with fresh credentials.
 - **Burp-friendly** — `--burp` routes everything through `127.0.0.1:8080` with
   TLS verification off, in one flag.
 - **Scope control** — registered-domain or exact-host scoping, allow/deny
@@ -219,6 +222,43 @@ absent the crawl continues without it.
 
 ---
 
+## Automatic re-authentication
+
+Long authenticated crawls outlive their tokens. When a request returns `401` or
+is redirected to a login page, arachne **re-authenticates and retries the failed
+request** — so the crawl keeps its session instead of drowning in 401s. A burst
+of concurrent failures triggers exactly one login (deduped via a lock +
+generation counter), capped at `--reauth-max` attempts (default 3).
+
+**1. Browser login (Playwright)** — drive a real login form:
+
+```bash
+python -m arachne -u https://app.target.tld --storage-state state.json --render \
+    --login-url https://app.target.tld/login \
+    --login-user "$USER" --login-pass "$PASS" --login-success /dashboard
+```
+
+Common username/password/submit fields auto-detect; override with
+`--login-user-selector` / `--login-pass-selector` / `--login-submit-selector`,
+or put it all in a JSON recipe and pass `--login-recipe` (see
+`examples/login.example.json`). A successful login captures a fresh
+`storage_state` (cookies **and** localStorage token), bridged into the static
+engine and reused by the render phase.
+
+**2. Command hook** — for OAuth refresh, SSO or anything custom, point
+`--reauth-command` at a script that prints fresh auth JSON:
+
+```bash
+# refresh.sh prints e.g.  {"cookies":{...},"headers":{...},"bearer":"eyJ...new"}
+python -m arachne -u https://api.target.tld --bearer "$TOKEN" \
+    --reauth-command './refresh.sh'
+```
+
+`summary.json` reports `auth_failures` (failures seen) and `reauths` (successful
+recoveries).
+
+---
+
 ## Output
 
 All files land in the `-o` directory (default `arachne-out/`):
@@ -233,7 +273,7 @@ All files land in the `-o` directory (default `arachne-out/`):
 | `candidates.txt` | low-confidence mined endpoints (not auto-fetched; review manually or rerun with `--fetch-candidates`) |
 | `secrets.jsonl` | detected secrets — `{type, confidence, match, url}`, redacted unless `--show-secrets` |
 | `graphql.json` | introspected GraphQL schemas (queries, mutations, types) per endpoint |
-| `summary.json` | counts by status / source / secret type, plus `auth_failures` (session-health) |
+| `summary.json` | counts by status / source / secret type, plus `auth_failures` + `reauths` (session-health) |
 
 The `source` field on each record tells you where it came from: `seed`, `html`,
 `js`, `json`, `render`, `openapi`, `graphql`, `imported` (HAR/Postman/Burp), or
@@ -252,6 +292,7 @@ transport    --proxy URL  --burp  -k/--insecure  -A UA  --no-redirects
 auth         -H  -b  --cookies-file  --bearer  --auth-json  --storage-state
              --auth-token-key  --auth-header  --auth-scheme  --no-auto-token
 passive      --har FILE  --postman FILE  --burp-xml FILE  --import-auth  --urlfinder
+reauth       --login-url  --login-user  --login-pass  --login-recipe  --reauth-command  --reauth-max
 discovery    --no-api-docs  --no-graphql  --no-secrets  --show-secrets  --fetch-candidates
 render       --render  --render-pages N  --render-wait MS  --no-scroll  --headful
 output       -o DIR  -q  -v

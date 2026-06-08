@@ -138,6 +138,55 @@ def test_postman_import():
     assert imp.headers.get("Authorization") == "Bearer tkn"
 
 
+def test_reauth_command_single_run_under_concurrency():
+    import asyncio
+    from arachne.config import Config
+    from arachne.reauth import ReAuth
+
+    class FakeHttp:
+        def __init__(self):
+            self.applied = []
+
+        def update_auth(self, cookies=None, headers=None):
+            self.applied.append((cookies, headers))
+
+    cfg = Config(seeds=["https://t.tld/"],
+                 reauth_command='echo \'{"bearer":"NEWTOK","cookies":{"s":"1"}}\'',
+                 reauth_max=3)
+    http = FakeHttp()
+    ra = ReAuth(cfg, http, lambda m: None)
+    assert ra.enabled
+
+    # five workers all observe generation 0 and request a refresh at once
+    results = asyncio.run(_gather(ra, [0, 0, 0, 0, 0]))
+    assert all(results)            # every worker ends up with fresh creds
+    assert ra.attempts == 1        # but exactly ONE real re-auth ran (no thundering herd)
+    assert ra.reauths == 1
+    assert ra.generation == 1
+    assert cfg.bearer == "NEWTOK"
+    assert http.applied[0][1].get("Authorization") == "Bearer NEWTOK"
+
+
+def test_reauth_command_failure_is_capped():
+    import asyncio
+    from arachne.config import Config
+    from arachne.reauth import ReAuth
+
+    class FakeHttp:
+        def update_auth(self, cookies=None, headers=None):
+            pass
+
+    cfg = Config(seeds=["https://t.tld/"], reauth_command="echo not-json", reauth_max=2)
+    ra = ReAuth(cfg, FakeHttp(), lambda m: None)
+    assert asyncio.run(ra.refresh(0)) is False     # bad output -> no fresh creds
+    assert ra.generation == 0 and ra.attempts == 1
+
+
+async def _gather(ra, gens):
+    import asyncio
+    return await asyncio.gather(*[ra.refresh(g) for g in gens])
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

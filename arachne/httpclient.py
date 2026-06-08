@@ -101,5 +101,17 @@ class HttpClient:
         except (httpx.TransportError, httpx.HTTPError):
             return None
 
+    def update_auth(self, cookies=None, headers=None) -> None:
+        """Hot-swap credentials on the live client (used by mid-crawl re-auth)."""
+        if cookies:
+            for k, v in cookies.items():
+                try:
+                    self._client.cookies.set(k, v)
+                except Exception:
+                    pass
+        if headers:
+            for k, v in headers.items():
+                self._client.headers[k] = v
+
     async def aclose(self) -> None:
         await self._client.aclose()
