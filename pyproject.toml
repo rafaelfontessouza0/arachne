@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arachne-spider"
-version = "0.5.0"
+version = "0.8.0"
 description = "Async web + API crawler/spider for authenticated and unauthenticated recon"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -28,3 +28,6 @@ arachne = "arachne.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["arachne*"]
+
+[tool.setuptools.package-data]
+arachne = ["data/wordlists/*.txt"]

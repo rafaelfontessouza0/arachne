@@ -13,7 +13,9 @@ class Task:
     method: str = "GET"
     depth: int = 0
     referrer: Optional[str] = None
-    source: str = "seed"  # seed | html | js | json | sitemap | robots | render | form
+    # seed|html|js|json|sitemap|robots|render|form|imported|openapi|graphql
+    # |ffuf|feroxbuster|arjun|katana|hakrawler|gospider|gau|waybackurls|urlfinder
+    source: str = "seed"
 
     def key(self) -> str:
         return f"{self.method} {self.url}"

@@ -99,6 +99,46 @@ def load_postman(path: str) -> Imported:
 
 
 def load_burp(path: str) -> Imported:
+    """Accept any Burp result export: the XML site-map / "save items" export, or a
+    JSON export (the REST API scan result, an issues export, or a URL list)."""
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        head = fh.read(64).lstrip()
+    if head[:1] in ("{", "["):
+        return _load_burp_json(path)
+    return _load_burp_xml(path)
+
+
+def _load_burp_json(path: str) -> Imported:
+    out = Imported()
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        data = json.load(fh)
+
+    def add(url, method="GET"):
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            out.entries.append((str(method).upper(), url))
+
+    def from_issue(issue):
+        if not isinstance(issue, dict):
+            return
+        origin = issue.get("origin") or ""
+        p = issue.get("path") or ""
+        add(issue.get("url") or (origin + p if origin else ""))
+
+    if isinstance(data, list):
+        for it in data:
+            if isinstance(it, str):
+                add(it)
+            elif isinstance(it, dict):
+                from_issue(it.get("issue", it))
+    elif isinstance(data, dict):
+        for it in data.get("urls", []) or []:
+            add(it)
+        for ev in (data.get("issue_events") or data.get("issues") or []):
+            from_issue(ev.get("issue", ev) if isinstance(ev, dict) else None)
+    return out
+
+
+def _load_burp_xml(path: str) -> Imported:
     out = Imported()
     tree = ET.parse(path)
     for item in tree.getroot().findall(".//item"):

@@ -10,7 +10,7 @@ from typing import List
 from . import __version__
 from .config import Config, DEFAULT_SKIP_EXT, DEFAULT_USER_AGENT
 from .auth import (parse_header_args, parse_cookie_arg, load_auth_json, apply_auth)
-from . import importers
+from . import importers, external
 from .crawler import Crawler
 
 BANNER = r"""
@@ -121,12 +121,16 @@ output files (in -o dir):
                    help="localStorage key holding the token (default: auto-detect)")
     g.add_argument("--no-auto-token", action="store_true",
                    help="don't bridge a localStorage token from --storage-state to the static engine")
+    g.add_argument("--no-auth-preflight", action="store_true",
+                   help="skip the pre-crawl check that verifies the session is actually authenticated")
 
     # passive import / seeding
     g = p.add_argument_group("passive import / seeding")
     g.add_argument("--har", metavar="FILE", help="seed from a HAR capture")
     g.add_argument("--postman", metavar="FILE", help="seed from a Postman collection")
     g.add_argument("--burp-xml", metavar="FILE", help="seed from a Burp Suite XML export")
+    g.add_argument("--burp-import", metavar="FILE",
+                   help="seed from any exported Burp result (XML site-map, or JSON issues/REST result)")
     g.add_argument("--import-auth", action="store_true",
                    help="also adopt cookies + Authorization captured in the import")
     g.add_argument("--urlfinder", action="store_true",
@@ -151,6 +155,78 @@ output files (in -o dir):
                    help="shell command that prints fresh auth JSON {cookies,headers,bearer}")
     g.add_argument("--reauth-max", type=int, default=3, metavar="N",
                    help="max re-auth attempts before giving up (default 3)")
+
+    # external-tool orchestration
+    g = p.add_argument_group("external-tool orchestration")
+    g.add_argument("--check-tools", action="store_true",
+                   help="list orchestrated tools, what's installed, and how to install the rest, then exit")
+    g.add_argument("--fetch-wordlists", nargs="?", const="", metavar="DIR",
+                   help="shallow-clone SecLists for richer fuzzing (default ~/.arachne/wordlists/SecLists), then exit")
+    g.add_argument("--enum-tool", action="append", default=[], metavar="NAME",
+                   choices=external.known_tools(),
+                   help="orchestrate a specific tool (repeatable): "
+                        + ", ".join(external.known_tools()))
+    g.add_argument("--all-tools", action="store_true",
+                   help="orchestrate every installed tool (discovery crawlers + passive + active fuzzers)")
+    g.add_argument("--tool-path", action="append", default=[], metavar="NAME=PATH",
+                   help="override a tool's binary path, e.g. --tool-path katana=/opt/katana (repeatable)")
+    # discovery crawlers / passive archives (no --fuzz needed)
+    g.add_argument("--katana", action="store_true", help="JS-aware crawl via katana")
+    g.add_argument("--gau", action="store_true", help="passive URLs via gau (Wayback/CC/OTX/URLScan)")
+    # active enumeration (gated behind --fuzz)
+    g.add_argument("--fuzz", action="store_true",
+                   help="run the active enumeration phase (directory + parameter discovery via ffuf + arjun)")
+    g.add_argument("--fuzz-dirs", action="store_true",
+                   help="directory/content discovery via ffuf (implies --fuzz)")
+    g.add_argument("--fuzz-params", action="store_true",
+                   help="parameter discovery via arjun (implies --fuzz)")
+    g.add_argument("--fuzz-wordlist", metavar="FILE",
+                   help="content wordlist for ffuf/feroxbuster (default: SecLists if found, else a vendored starter)")
+    g.add_argument("--param-wordlist", metavar="FILE",
+                   help="parameter wordlist for arjun (default: arjun's built-in)")
+    g.add_argument("--seclists-root", metavar="DIR",
+                   help="path to a SecLists checkout for wordlist resolution")
+    g.add_argument("--ffuf-path", default="ffuf", metavar="PATH", help="path to the ffuf binary")
+    g.add_argument("--arjun-path", default="arjun", metavar="PATH", help="path to the arjun binary")
+    g.add_argument("--tool-timeout", type=int, default=180, metavar="SEC",
+                   help="per-tool subprocess timeout (default 180)")
+    g.add_argument("--fuzz-max-endpoints", type=int, default=50, metavar="N",
+                   help="max in-scope endpoints to probe for parameters (default 50)")
+    g.add_argument("--tool-max-results", type=int, default=0, metavar="N",
+                   help="cap results folded back per tool (0 = unlimited)")
+
+    # stateful scanners (Burp Pro / OWASP ZAP)
+    g = p.add_argument_group("scanners (Burp Pro REST API / OWASP ZAP daemon)")
+    g.add_argument("--zap", action="store_true",
+                   help="drive a ZAP daemon: spider the target and fold its URLs into the crawl")
+    g.add_argument("--zap-url", default="http://127.0.0.1:8080", metavar="URL",
+                   help="ZAP daemon API base (default http://127.0.0.1:8080)")
+    g.add_argument("--zap-api-key", metavar="KEY", help="ZAP API key (if the daemon requires one)")
+    g.add_argument("--zap-launch", action="store_true",
+                   help="launch a ZAP daemon (via --zap-path) if none is reachable")
+    g.add_argument("--zap-path", default="zap.sh", metavar="PATH",
+                   help="ZAP launcher used by --zap-launch (default zap.sh)")
+    g.add_argument("--zap-ajax", action="store_true",
+                   help="also run ZAP's AJAX spider (better SPA coverage)")
+    g.add_argument("--burp-scan", action="store_true",
+                   help="drive a Burp Pro authenticated scan via the REST API; fold issue URLs in")
+    g.add_argument("--burp-api-url", default="http://127.0.0.1:1337", metavar="URL",
+                   help="Burp Pro REST API base (default http://127.0.0.1:1337)")
+    g.add_argument("--burp-api-key", metavar="KEY", help="Burp Pro REST API key")
+    g.add_argument("--burp-config", metavar="NAME",
+                   help="Burp named scan configuration (e.g. 'Crawl and Audit - Lightweight')")
+    g.add_argument("--burp-headless", action="store_true",
+                   help="launch Burp Pro headless (no REST API) and route the whole crawl through "
+                        "its proxy; Burp records/scans into a saved .burp project")
+    g.add_argument("--burp-jar", metavar="PATH",
+                   help="path to burpsuite_pro.jar for --burp-headless (else auto-detected)")
+    g.add_argument("--burp-headless-port", type=int, default=8080, metavar="PORT",
+                   help="port arachne expects Burp's proxy on (default 8080 is Burp's built-in "
+                        "listener; other ports need a --burp-config-file defining that listener)")
+    g.add_argument("--burp-project", metavar="FILE",
+                   help="Burp .burp project file for --burp-headless (else <out>/burp-headless.burp)")
+    g.add_argument("--burp-config-file", action="append", default=[], metavar="FILE",
+                   help="Burp project config(s) for --burp-headless (scope/auth/live-audit; repeatable)")
 
     # discovery
     g = p.add_argument_group("discovery / extraction")
@@ -188,6 +264,40 @@ output files (in -o dir):
     return p
 
 
+def print_tool_catalog() -> None:
+    """Render the orchestrated-tool inventory: what's installed and how to get the rest."""
+    rows = external.tool_catalog()
+    name_w = max(len(r["name"]) for r in rows)
+    cat_w = max(len(r["category"]) for r in rows)
+    print("arachne — orchestrated external tools\n")
+    print(f"  {'tool'.ljust(name_w)}  {'kind'.ljust(cat_w)}  status      purpose")
+    print(f"  {'-' * name_w}  {'-' * cat_w}  ----------  -------")
+    missing = []
+    for r in rows:
+        mark = "[ok]     " if r["available"] else "[MISSING]"
+        print(f"  {r['name'].ljust(name_w)}  {r['category'].ljust(cat_w)}  {mark}  {r['purpose']}")
+        if not r["available"]:
+            missing.append(r)
+    if missing:
+        print("\ninstall the missing tools:")
+        for r in missing:
+            print(f"  {r['name']}:  {r['install']}")
+    else:
+        print("\nall orchestrated tools are installed.")
+
+    # wordlist status — what ffuf/feroxbuster will use out of the box
+    cfg = Config(seeds=["https://example.com"])
+    content = external.resolve_content_wordlist(cfg)
+    seclists = external.seclists_content(cfg)
+    print("\nwordlists:")
+    print(f"  default content list:  {content or '(none)'}")
+    print(f"  SecLists:              {'found: ' + seclists if seclists else 'not found — run: arachne --fetch-wordlists'}")
+    print(f"  vendored shortcuts:    " + ", ".join("@" + k for k in external.VENDORED_WORDLISTS))
+
+    print("\nselect tools with --enum-tool NAME (repeatable), --all-tools, or the\n"
+          "convenience flags --katana/--gau (discovery) and --fuzz/--fuzz-dirs/--fuzz-params (active).")
+
+
 def _read_seed_list(path: str) -> List[str]:
     out = []
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -214,6 +324,37 @@ def config_from_args(ns: argparse.Namespace) -> Config:
     if ns.login_recipe:
         with open(ns.login_recipe, "r", encoding="utf-8") as fh:
             recipe = json.load(fh)
+
+    # Resolve which external tools to drive. --enum-tool selects explicitly;
+    # --all-tools selects everything; --katana/--gau/--fuzz-dirs/--fuzz-params and
+    # --urlfinder are conveniences; bare --fuzz drives the default active pair.
+    # fuzz (the active phase) is on iff any *active* tool ends up selected.
+    enum_tools = list(dict.fromkeys(ns.enum_tool))
+    if ns.all_tools:
+        enum_tools = list(external.known_tools())
+    for flag, tool in ((ns.katana, "katana"), (ns.gau, "gau"),
+                       (ns.fuzz_dirs, "ffuf"), (ns.fuzz_params, "arjun"),
+                       (ns.urlfinder, "urlfinder")):
+        if flag and tool not in enum_tools:
+            enum_tools.append(tool)
+    if ns.fuzz and not any(external.is_active(t) for t in enum_tools):
+        for t in ("ffuf", "arjun"):
+            if t not in enum_tools:
+                enum_tools.append(t)
+    fuzz = bool(ns.fuzz or any(external.is_active(t) for t in enum_tools))
+
+    tool_paths = {}
+    for item in ns.tool_path:
+        if "=" in item:
+            k, v = item.split("=", 1)
+            if k.strip() and v.strip():
+                tool_paths[k.strip()] = v.strip()
+
+    scanners = []
+    if ns.zap:
+        scanners.append("zap")
+    if ns.burp_scan:
+        scanners.append("burp")
 
     cfg = Config(
         seeds=seeds,
@@ -248,6 +389,7 @@ def config_from_args(ns: argparse.Namespace) -> Config:
         auth_scheme=ns.auth_scheme,
         auto_token=not ns.no_auto_token,
         auth_token_key=ns.auth_token_key,
+        auth_preflight=not ns.no_auth_preflight,
         login_url=ns.login_url or recipe.get("url"),
         login_username=ns.login_user or recipe.get("username"),
         login_password=ns.login_pass or recipe.get("password"),
@@ -260,6 +402,31 @@ def config_from_args(ns: argparse.Namespace) -> Config:
         reauth_max=ns.reauth_max,
         urlfinder=ns.urlfinder,
         urlfinder_path=ns.urlfinder_path,
+        fuzz=fuzz,
+        external_tools=enum_tools,
+        tool_paths=tool_paths,
+        scanners=scanners,
+        zap_url=ns.zap_url,
+        zap_api_key=ns.zap_api_key,
+        zap_path=ns.zap_path,
+        zap_launch=ns.zap_launch,
+        zap_ajax=ns.zap_ajax,
+        burp_api_url=ns.burp_api_url,
+        burp_api_key=ns.burp_api_key,
+        burp_config_name=ns.burp_config,
+        burp_headless=ns.burp_headless,
+        burp_jar=ns.burp_jar,
+        burp_headless_port=ns.burp_headless_port,
+        burp_project=ns.burp_project,
+        burp_config_files=list(ns.burp_config_file),
+        fuzz_wordlist=ns.fuzz_wordlist,
+        param_wordlist=ns.param_wordlist,
+        seclists_root=ns.seclists_root,
+        ffuf_path=ns.ffuf_path,
+        arjun_path=ns.arjun_path,
+        tool_timeout=ns.tool_timeout,
+        tool_max_results=ns.tool_max_results,
+        fuzz_max_endpoints=ns.fuzz_max_endpoints,
         fetch_candidates=ns.fetch_candidates,
         scan_secrets=not ns.no_secrets,
         redact_secrets=not ns.show_secrets,
@@ -284,7 +451,8 @@ def config_from_args(ns: argparse.Namespace) -> Config:
         cfg.bearer = cfg.bearer or bearer
         cfg.storage_state = cfg.storage_state or storage
 
-    imp = importers.load_any(har=ns.har, postman=ns.postman, burp=ns.burp_xml)
+    imp = importers.load_any(har=ns.har, postman=ns.postman,
+                             burp=ns.burp_xml or ns.burp_import)
     if imp:
         cfg.import_entries = imp.entries
         if ns.import_auth:
@@ -300,7 +468,18 @@ def config_from_args(ns: argparse.Namespace) -> Config:
 def main(argv: List[str] = None) -> int:
     parser = build_parser()
     ns = parser.parse_args(argv)
-    has_import = bool(ns.har or ns.postman or ns.burp_xml)
+    if ns.check_tools:
+        print_tool_catalog()
+        return 0
+    if ns.fetch_wordlists is not None:
+        dest = ns.fetch_wordlists or None
+        print(f"[*] fetching SecLists into {dest or external.DEFAULT_SECLISTS_DEST} (this can take a while)...")
+        ok, msg = external.fetch_seclists(dest)
+        print(("[+] " if ok else "[!] ") + msg)
+        if ok:
+            print("[*] arachne auto-detects this checkout; fuzz with: arachne -u <URL> --fuzz")
+        return 0 if ok else 1
+    has_import = bool(ns.har or ns.postman or ns.burp_xml or ns.burp_import)
     if not ns.url and not ns.list and not (has_import and ns.scope):
         parser.error("provide -u/-l, or an import (--har/--postman/--burp-xml) together with --scope")
     cfg = config_from_args(ns)

@@ -27,6 +27,8 @@ class Output:
         self.openapi_endpoints = 0
         self.auth_failures = 0
         self.reauths = 0
+        self.fuzz_hits = 0          # paths confirmed by an active content fuzzer (ffuf)
+        self.active_params = 0      # params confirmed by an active param fuzzer (arjun)
         self.n_results = 0
 
     def write(self, r: Result) -> None:
@@ -45,6 +47,9 @@ class Output:
 
     def add_js(self, url: str) -> None:
         self.js.add(url)
+
+    def add_param(self, name: str) -> None:
+        self.params.add(name)
 
     def add_candidate(self, url: str) -> None:
         self.candidates.add(url)
@@ -85,6 +90,8 @@ class Output:
             "graphql_endpoints": len(self.graphql),
             "auth_failures": self.auth_failures,
             "reauths": self.reauths,
+            "fuzz_hits": self.fuzz_hits,
+            "active_params": self.active_params,
             "js_files": len(self.js),
             "params": len(self.params),
             "candidates": len(self.candidates),

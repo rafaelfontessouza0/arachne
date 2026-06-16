@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sys
 from typing import List, Set, Optional, Tuple
@@ -43,6 +44,7 @@ class Crawler:
         self._auth_failures = 0
         self._auth_warned = False
         self.reauth = None  # built in run()
+        self._burp_headless = None  # built in run() if --burp-headless
 
     # -- logging -----------------------------------------------------------
     def _log(self, msg: str) -> None:
@@ -271,8 +273,6 @@ class Crawler:
             if url:
                 await self.frontier.add(Task(url=url, method="GET", depth=0, source="seed"))
         await self._seed_imports()
-        if self.cfg.urlfinder:
-            await self._seed_urlfinder()
         if self.cfg.crawl_sitemap or self.cfg.respect_robots:
             await self._seed_robots_sitemap()
 
@@ -296,30 +296,6 @@ class Crawler:
                 self._record_discovery(n, "imported", 0, "import", "out-of-scope")
         self._log(f"[*] imported {len(self.cfg.import_entries)} captured request(s), "
                   f"{n_in} in-scope queued")
-
-    async def _seed_urlfinder(self) -> None:
-        from . import passive
-        domains = sorted(self.scope.reg_domains)
-        if not domains:
-            return
-        self._log(f"[*] urlfinder: passive URL discovery over {len(domains)} domain(s)")
-        loop = asyncio.get_event_loop()
-        urls = await loop.run_in_executor(
-            None, passive.run_urlfinder, domains, self.cfg.urlfinder_path)
-        if urls is None:
-            self._log("[!] urlfinder binary not found — skipping "
-                      "(install: go install github.com/projectdiscovery/urlfinder/cmd/urlfinder@latest)")
-            return
-        added = 0
-        for u in urls:
-            n = self.scope.normalize(u)
-            if n and self.scope.in_scope(n):
-                if self.scope.is_asset(n) and not self.cfg.include_assets:
-                    continue
-                if await self.frontier.add(Task(url=n, method="GET", depth=1,
-                                                referrer="urlfinder", source="passive")):
-                    added += 1
-        self._log(f"[+] urlfinder: {len(urls)} URLs found, {added} in-scope queued")
 
     async def _seed_robots_sitemap(self) -> None:
         for origin in self._origins():
@@ -412,6 +388,179 @@ class Crawler:
                       f"({len(summary.get('queries', []))} queries, "
                       f"{len(summary.get('mutations', []))} mutations)")
 
+    # -- auth preflight ----------------------------------------------------
+    async def _auth_preflight(self) -> None:
+        """Verify the session is actually authenticated *before* the crawl.
+
+        Authenticated crawling fails quietly: a dead cookie/token silently
+        downgrades to the public surface and you only notice when findings come
+        up thin. One probe of the first seed turns that silent failure loud."""
+        seed = None
+        for s in self.cfg.seeds:
+            n = self.scope.normalize(s)
+            if n:
+                seed = n
+                break
+        if not seed:
+            return
+        resp = await self.http.request("GET", seed)
+        if resp is None:
+            self._log("[!] auth preflight: could not reach the first seed to verify the session")
+            return
+        final = str(resp.url)
+        redirected = final != seed
+        login_redirect = redirected and bool(_LOGIN_RE.search(final))
+        if resp.status_code in (401, 403) or login_redirect:
+            detail = f"status {resp.status_code}" + (f", redirected to {final}" if redirected else "")
+            self._log(f"[!] auth preflight: seeds look UNAUTHENTICATED ({detail}) — check "
+                      "--storage-state/--bearer/--cookie, or arm --login-url/--reauth-command")
+        else:
+            self._log(f"[+] auth preflight: session looks authenticated (seed returned {resp.status_code})")
+
+    # -- external-tool orchestration ---------------------------------------
+    def _tool_input(self, tool) -> List[str]:
+        """Build the input list a tool expects, per its declared ``input_kind``."""
+        kind = getattr(tool, "input_kind", "origins")
+        if kind == "domains":
+            return sorted(self.scope.reg_domains)
+        if kind == "origins":
+            return sorted(self._origins())
+        if kind == "urls":
+            return self._param_targets()
+        if kind == "seeds":
+            return self._seed_urls()
+        return []
+
+    def _seed_urls(self) -> List[str]:
+        """Normalised, de-duplicated seed URLs (input for crawlers + scanners)."""
+        out, seen = [], set()
+        for s in self.cfg.seeds:
+            n = self.scope.normalize(s)
+            if n and n not in seen:
+                seen.add(n)
+                out.append(n)
+        return out
+
+    async def _run_tools(self, tools, bump_fuzz: bool) -> None:
+        """Run each tool off the event loop and fold its findings into the frontier."""
+        loop = asyncio.get_event_loop()
+        for tool in tools:
+            if not tool.available():
+                self._log(f"[!] {tool.name} not found on PATH — skipping (install: {tool.install})")
+                continue
+            reason = tool.skip_reason()
+            if reason:
+                self._log(f"[!] {tool.name}: {reason} — skipping")
+                continue
+            inputs = self._tool_input(tool)
+            if not inputs:
+                self._vlog(f"  [{tool.name}] nothing in scope to run on")
+                continue
+            self._log(f"[*] {tool.name}: {tool.purpose} ({len(inputs)} input(s))")
+            findings = await loop.run_in_executor(None, tool.run, inputs)
+            added = await self._fold_findings(findings, tool.name, bump_fuzz=bump_fuzz)
+            self._log(f"[+] {tool.name}: {len(findings or [])} finding(s), "
+                      f"{added} new in-scope queued")
+
+    async def _discovery_phase(self) -> None:
+        """Passive archives + JS-aware crawlers (no --fuzz needed). URLs they find
+        are folded into the frontier and re-crawled/re-mined in the next drain."""
+        from . import external
+        tools = [t for t in external.build_tools(self.cfg) if not t.active]
+        if not tools:
+            return
+        self._log(f"[*] discovery orchestration: {', '.join(t.name for t in tools)}")
+        await self._run_tools(tools, bump_fuzz=False)
+
+    async def _scanner_phase(self) -> None:
+        """Drive stateful scanners (Burp Pro REST API, ZAP daemon) and fold the
+        URLs they surface into the frontier. Network failures skip gracefully."""
+        from . import scanners
+        tools = scanners.build_scanners(self.cfg)
+        if not tools:
+            return
+        loop = asyncio.get_event_loop()
+        seeds = self._seed_urls()
+        self._log(f"[*] scanner orchestration: {', '.join(t.name for t in tools)}")
+        for sc in tools:
+            findings = await loop.run_in_executor(None, sc.run, seeds, self._log)
+            added = await self._fold_findings(findings, sc.name, bump_fuzz=False)
+            self._log(f"[+] {sc.name}: {len(findings or [])} URL(s) found, "
+                      f"{added} new in-scope queued")
+            last = getattr(sc, "_last_result", None)
+            if last:
+                try:
+                    path = os.path.join(self.out.dir, f"{sc.name}-result.json")
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump(last, fh, indent=2)
+                    self._log(f"[+] {sc.name}: full result written to {path}")
+                except OSError:
+                    pass
+
+    async def _fuzz_phase(self) -> None:
+        """Active enumeration (ffuf/feroxbuster dirs, arjun params). Every in-scope
+        finding is folded back and re-crawled so brute-forced paths get fetched and
+        mined by extract.py (the compounding loop)."""
+        from . import external
+        tools = [t for t in external.build_tools(self.cfg) if t.active]
+        if not tools:
+            return
+        self._log(f"[*] active enumeration: {', '.join(t.name for t in tools)} "
+                  "(GET-only; destructive paths stay denied unless --allow-active)")
+        await self._run_tools(tools, bump_fuzz=True)
+        await self._drain()
+
+    def _param_targets(self) -> List[str]:
+        """In-scope, non-asset, non-JS URLs already discovered — candidates to
+        test for hidden parameters."""
+        out: List[str] = []
+        for u in sorted(self.out.urls):
+            if not self.scope.in_scope(u) or self.scope.is_asset(u) or self.scope.is_js(u):
+                continue
+            out.append(u)
+        cap = self.cfg.fuzz_max_endpoints
+        return out[:cap] if cap and cap > 0 else out
+
+    async def _fold_findings(self, findings, tool_name: str, bump_fuzz: bool = True) -> int:
+        """Route normalised tool findings into the frontier / params output.
+
+        ``bump_fuzz`` counts folded URLs as active content hits (ffuf/feroxbuster);
+        discovery crawlers pass False so passive URLs don't inflate ``fuzz_hits``
+        (their provenance still shows up in ``summary.json`` ``source_counts``)."""
+        from . import external
+        added = 0
+        for f in findings or []:
+            if f.kind == "url":
+                n = self.scope.normalize(f.url)
+                if not n or not self.scope.in_scope(n):
+                    continue
+                if self.scope.is_asset(n) and not self.cfg.include_assets:
+                    continue
+                if await self.frontier.add(Task(url=n, method="GET", depth=1,
+                                                referrer=tool_name, source=f.source or tool_name)):
+                    added += 1
+                    if bump_fuzz:
+                        self.out.fuzz_hits += 1
+            elif f.kind == "param":
+                base = self.scope.normalize(f.url)
+                if not base or not self.scope.in_scope(base):
+                    continue
+                names = sorted({p for p in f.params if p})
+                if not names:
+                    continue
+                self.out.write(Result(url=base, source=f.source or tool_name, depth=1,
+                                      referrer=tool_name, is_api=extract.looks_like_api(base),
+                                      params=names, note="param-discovery"))
+                for p in names:
+                    self.out.add_param(p)
+                self.out.active_params += len(names)
+                probe = external.synthesize_param_url(base, names)
+                if probe and await self.frontier.add(Task(url=probe, method="GET", depth=1,
+                                                          referrer=tool_name,
+                                                          source=f.source or tool_name)):
+                    added += 1
+        return added
+
     # -- render phase ------------------------------------------------------
     async def _render_phase(self, pages=None, drain: bool = True) -> None:
         from .browser import BrowserRenderer, PlaywrightUnavailable
@@ -463,6 +612,17 @@ class Crawler:
                       "into the static engine")
         # build loop-bound objects now that the event loop is running
         self.frontier = Frontier(self.cfg, self.scope)
+        if self.cfg.burp_headless:
+            from .scanners import BurpHeadless
+            bh = BurpHeadless(self.cfg)
+            loop = asyncio.get_event_loop()
+            if await loop.run_in_executor(None, bh.start, self._log):
+                self.cfg.proxy = bh.proxy_url()
+                self.cfg.insecure = True
+                self._burp_headless = bh
+                self._log(f"[*] routing the entire crawl through headless Burp at {bh.proxy_url()}")
+            else:
+                self._log("[!] continuing without headless Burp")
         self.http = HttpClient(self.cfg)
         if self.cfg.impersonate:
             self._log(f"[*] TLS impersonation: {self.cfg.impersonate} (curl_cffi backend)")
@@ -475,6 +635,10 @@ class Crawler:
                       f"(max {self.cfg.reauth_max} attempts)")
         try:
             await self._seed()
+            if self._authed and self.cfg.auth_preflight:
+                await self._auth_preflight()
+            await self._discovery_phase()
+            await self._scanner_phase()
             if self.cfg.browser_first:
                 self._log("[*] browser-first: rendering seeds before the static crawl")
                 await self._render_phase(pages=list(self.cfg.seeds), drain=False)
@@ -484,18 +648,25 @@ class Crawler:
             if self.cfg.graphql:
                 await self._discover_graphql()
             await self._drain()
+            if self.cfg.fuzz:
+                await self._fuzz_phase()
             if self.cfg.render:
                 await self._render_phase()
         finally:
             self.out.auth_failures = self._auth_failures
             self.out.reauths = self.reauth.reauths if self.reauth else 0
             await self.http.aclose()
+            if self._burp_headless is not None:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self._burp_headless.stop, self._log)
             summary = self.out.close()
         self._log(f"[+] done | fetched {self._fetched} | urls {summary['unique_urls']} "
                   f"| api {summary['api_endpoints']} | openapi {summary['openapi_endpoints']} "
                   f"| graphql {summary['graphql_endpoints']} | js {summary['js_files']} "
                   f"| params {summary['params']} | candidates {summary['candidates']} "
                   f"| secrets {summary['secrets']}"
+                  + (f" | fuzz-hits {summary['fuzz_hits']}" if summary.get('fuzz_hits') else "")
+                  + (f" | active-params {summary['active_params']}" if summary.get('active_params') else "")
                   + (f" | auth-failures {self._auth_failures}" if self._auth_failures else "")
                   + (f" | reauths {summary['reauths']}" if summary.get('reauths') else ""))
         self._log(f"[+] output written to: {self.cfg.output_dir}/")

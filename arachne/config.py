@@ -93,6 +93,39 @@ class Config:
     urlfinder: bool = False
     urlfinder_path: str = "urlfinder"
 
+    # External-tool orchestration
+    #   discovery tools (katana/gau/waybackurls/hakrawler/gospider/urlfinder) run
+    #     whenever selected; active tools (ffuf/feroxbuster/arjun) need --fuzz.
+    fuzz: bool = False                       # run the active enumeration phase
+    external_tools: List[str] = field(default_factory=list)  # registry names to drive
+    tool_paths: Dict[str, str] = field(default_factory=dict)  # name -> binary path override
+    fuzz_wordlist: Optional[str] = None      # content wordlist for ffuf/feroxbuster (else SecLists/vendored)
+    param_wordlist: Optional[str] = None     # wordlist for arjun (else its built-in)
+    seclists_root: Optional[str] = None      # SecLists checkout for wordlist resolution
+    ffuf_path: str = "ffuf"
+    arjun_path: str = "arjun"
+    tool_timeout: int = 180                  # per-tool subprocess timeout
+    tool_max_results: int = 0                # cap results folded back per tool (0 = unlimited)
+    fuzz_max_endpoints: int = 50             # max in-scope endpoints to probe for params
+    auth_preflight: bool = True              # verify the session is live before crawling
+
+    # Stateful scanner orchestration (Burp Pro REST API, OWASP ZAP daemon)
+    scanners: List[str] = field(default_factory=list)  # "zap" | "burp"
+    zap_url: str = "http://127.0.0.1:8080"   # ZAP daemon API base
+    zap_api_key: Optional[str] = None
+    zap_path: str = "zap.sh"                  # binary used by --zap-launch
+    zap_launch: bool = False                  # launch a ZAP daemon if none is reachable
+    zap_ajax: bool = False                    # also run the AJAX spider (SPA coverage)
+    burp_api_url: str = "http://127.0.0.1:1337"  # Burp Pro REST API base
+    burp_api_key: Optional[str] = None
+    burp_config_name: Optional[str] = None    # Burp named scan configuration
+    # Burp Pro headless (no REST API): launch burpsuite_pro.jar, crawl through its proxy
+    burp_headless: bool = False
+    burp_jar: Optional[str] = None            # path to burpsuite_pro.jar (else auto-detect)
+    burp_headless_port: int = 8080            # proxy listener Burp opens headless
+    burp_project: Optional[str] = None        # .burp project file (else <out>/burp-headless.burp)
+    burp_config_files: List[str] = field(default_factory=list)  # project config(s) for scope/audit
+
     # Browser / render
     render: bool = False
     render_pages: int = 50
