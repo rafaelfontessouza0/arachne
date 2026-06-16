@@ -15,23 +15,23 @@ can diff the two surfaces.
 
 ### Why arachne
 
-- 🔐 **Built for authenticated targets** — carries the session as a cookie **and**
+- **Built for authenticated targets** — carries the session as a cookie **and**
   a localStorage JWT, runs a pre-crawl **auth preflight** so a dead token fails
   *loudly* (not silently), **self-heals** the session mid-crawl, and can seed from
   a captured session (HAR / Burp / Postman).
-- 🧰 **Spine + orchestration** — keeps a native crawler **and** drives `katana`,
+- **Spine + orchestration** — keeps a native crawler **and** drives `katana`,
   `gau`, `waybackurls`, `hakrawler`, `gospider`, `ffuf`, `feroxbuster`, `arjun`,
   `urlfinder` — one unified output with per-tool provenance. `--check-tools` shows
   what's installed; missing tools are skipped, never fatal.
-- 🟠 **Burp & ZAP from the command line** — launch **Burp Pro headless with no REST
+- **Burp & ZAP from the command line** — launch **Burp Pro headless with no REST
   API** and route the whole crawl through it, or drive its REST-API scan; drive a
   **ZAP** daemon's spider; proxy-feed through either; import their exports.
-- 🛰️ **API-first** — OpenAPI/Swagger parsing, GraphQL introspection, JS/XHR
+- **API-first** — OpenAPI/Swagger parsing, GraphQL introspection, JS/XHR
   endpoint mining, and headless-Chromium SPA rendering surface the API behind
   modern single-page apps.
-- 🛡️ **Safe & polite by default** — `GET`/`HEAD` only, destructive paths denied,
+- **Safe & polite by default** — `GET`/`HEAD` only, destructive paths denied,
   per-host rate limiting, and browser **TLS/JA3 impersonation** for WAF'd targets.
-- 📦 **Zero-config** — curated wordlists ship in the box, tools auto-detect on
+- **Zero-config** — curated wordlists ship in the box, tools auto-detect on
   `PATH`, and `--fetch-wordlists` pulls SecLists when you want depth.
 
 ### Proven in a controlled A/B
